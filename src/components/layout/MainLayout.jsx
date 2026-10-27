@@ -1,4 +1,5 @@
 import React from 'react';
+import { Outlet } from 'react-router-dom';
 import { Sidebar } from './Sidebar';
 import { TopNavbar } from './TopNavbar';
 import { HRMessageModal, FirstDayPlanModal } from '../ui/Modal';
@@ -16,7 +17,7 @@ export const MainLayout = ({ children }) => {
 
         {/* Page Content */}
         <main className="flex-1 p-4 sm:p-6 lg:p-8 max-w-7xl w-full mx-auto">
-          {children}
+          {children || <Outlet />}
         </main>
       </div>
 

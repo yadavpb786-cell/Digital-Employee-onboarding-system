@@ -1,14 +1,17 @@
 import React from 'react';
 import { BrowserRouter } from 'react-router-dom';
+import { AuthProvider } from './context/AuthContext';
 import { OnboardingProvider } from './context/OnboardingContext';
 import { AppRoutes } from './routes/AppRoutes';
 
 export function App() {
   return (
     <BrowserRouter>
-      <OnboardingProvider>
-        <AppRoutes />
-      </OnboardingProvider>
+      <AuthProvider>
+        <OnboardingProvider>
+          <AppRoutes />
+        </OnboardingProvider>
+      </AuthProvider>
     </BrowserRouter>
   );
 }

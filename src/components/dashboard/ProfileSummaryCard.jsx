@@ -16,7 +16,7 @@ export const ProfileSummaryCard = () => {
             Employee Profile
           </span>
           <button 
-            onClick={() => navigate('/settings')}
+            onClick={() => navigate('/profile')}
             className="p-1 rounded-lg text-slate-400 hover:text-indigo-600 hover:bg-slate-100 transition-colors"
             title="Edit Profile"
           >
@@ -75,7 +75,7 @@ export const ProfileSummaryCard = () => {
       </div>
 
       <button
-        onClick={() => navigate('/settings')}
+        onClick={() => navigate('/profile')}
         className="w-full py-2.5 text-xs font-bold text-slate-700 bg-slate-100 hover:bg-slate-200 rounded-xl transition-all"
       >
         View Full Profile →

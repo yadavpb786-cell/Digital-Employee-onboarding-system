@@ -1,5 +1,5 @@
 import React from 'react';
-import { NavLink, useLocation } from 'react-router-dom';
+import { NavLink, useLocation, useNavigate } from 'react-router-dom';
 import { 
   LayoutDashboard, 
   Compass, 
@@ -16,29 +16,52 @@ import {
   Settings, 
   LogOut,
   X,
-  ChevronRight
+  ChevronRight,
+  User,
+  Award,
+  Sparkles,
+  UserPlus,
+  BarChart3,
+  ShieldCheck
 } from 'lucide-react';
 import { NovaLogo } from '../brand/NovaLogo';
 import { useOnboarding } from '../../context/OnboardingContext';
+import { useAuth } from '../../context/AuthContext';
+import { getDefaultPathForRole } from '../../utils/roleRouting';
 
 export const Sidebar = () => {
   const location = useLocation();
+  const navigate = useNavigate();
+  const { logout, isHROrAdmin, isAdmin, isEmployee, systemRole, user } = useAuth();
   const { 
     employee, 
     setIsHrModalOpen, 
     isMobileSidebarOpen, 
     setIsMobileSidebarOpen,
-    completedCount,
-    totalCount
+    completedStagesCount,
+    totalStagesCount
   } = useOnboarding();
 
-  const mainNav = [
+  const hrNav = [
+    { title: 'HR Dashboard', path: '/hr/dashboard', icon: LayoutDashboard },
+    { title: 'Candidates / Employees', path: '/hr/employees', icon: Users },
+    { title: 'HR Analytics', path: '/hr/analytics', icon: BarChart3 },
+    { title: 'Invitations', path: '/invitations', icon: UserPlus },
+  ];
+
+  const adminNav = [
+    { title: 'Admin Portal', path: '/admin/portal', icon: ShieldCheck },
+  ];
+
+  // Employee-only candidate onboarding navigation
+  const employeeMainNav = [
     { title: 'Dashboard', path: '/dashboard', icon: LayoutDashboard },
-    { title: 'My Onboarding', path: '/onboarding', icon: Compass, badge: `${completedCount}/${totalCount}` },
+    { title: 'My Onboarding', path: '/onboarding', icon: Compass, badge: `${completedStagesCount}/${totalStagesCount}` },
+    { title: 'Employee Profile', path: '/profile', icon: User },
     { title: 'Tasks', path: '/tasks', icon: CheckSquare },
     { title: 'Documents', path: '/documents', icon: FileText },
     { title: 'Training', path: '/training', icon: GraduationCap },
-    { title: 'Calendar', path: '/calendar', icon: CalendarIcon },
+    { title: 'First Day Plan', path: '/first-day', icon: CalendarIcon },
   ];
 
   const companyNav = [
@@ -48,7 +71,10 @@ export const Sidebar = () => {
     { title: 'Announcements', path: '/announcements', icon: Megaphone },
   ];
 
-  const supportNav = [
+  // Employee-specific onboarding quiz and support
+  const employeeSupportNav = [
+    { title: 'Onboarding Quiz', path: '/quiz', icon: Award },
+    { title: 'Feedback', path: '/feedback', icon: MessageSquare },
     { title: 'Help Center', path: '/help', icon: HelpCircle },
     { 
       title: 'Contact HR', 
@@ -59,6 +85,11 @@ export const Sidebar = () => {
         setIsMobileSidebarOpen(false);
       } 
     },
+  ];
+
+  // General help for HR and Admin roles
+  const generalSupportNav = [
+    { title: 'Help Center', path: '/help', icon: HelpCircle },
   ];
 
   const renderNavGroup = (label, items) => (
@@ -155,9 +186,22 @@ export const Sidebar = () => {
 
         {/* Scrollable Navigation Menu */}
         <div className="flex-1 overflow-y-auto p-4 custom-scrollbar">
-          {renderNavGroup('MAIN', mainNav)}
+          {/* Employee-Only Navigation */}
+          {isEmployee && renderNavGroup('MAIN', employeeMainNav)}
+
+          {/* Admin Navigation */}
+          {isAdmin && renderNavGroup('ADMINISTRATION', adminNav)}
+
+          {/* HR & Admin Navigation */}
+          {isHROrAdmin && renderNavGroup('TALENT & HR', hrNav)}
+
+          {/* Company-Wide Shared Navigation */}
           {renderNavGroup('COMPANY', companyNav)}
-          {renderNavGroup('SUPPORT', supportNav)}
+
+          {/* Support Navigation: Employee Onboarding Tools vs General Help */}
+          {isEmployee 
+            ? renderNavGroup('ONBOARDING & SUPPORT', employeeSupportNav)
+            : renderNavGroup('SUPPORT', generalSupportNav)}
         </div>
 
         {/* Bottom Sidebar Settings & User Footer */}
@@ -175,21 +219,33 @@ export const Sidebar = () => {
           </NavLink>
 
           {/* User profile compact card */}
-          <div className="p-2.5 rounded-xl bg-slate-800/60 border border-slate-800 flex items-center justify-between">
+          <div 
+            onClick={() => {
+              navigate(isEmployee ? '/profile' : getDefaultPathForRole(systemRole));
+              setIsMobileSidebarOpen(false);
+            }}
+            className="p-2.5 rounded-xl bg-slate-800/60 border border-slate-800 hover:border-slate-700 hover:bg-slate-800 flex items-center justify-between cursor-pointer transition-colors"
+          >
             <div className="flex items-center gap-2.5 overflow-hidden">
               <img 
-                src={employee.avatar} 
-                alt={employee.name} 
+                src={user?.avatar || employee.avatar} 
+                alt={user?.name || employee.name} 
                 className="w-8 h-8 rounded-full object-cover ring-2 ring-indigo-500/40 shrink-0" 
               />
               <div className="overflow-hidden">
-                <p className="text-xs font-semibold text-white truncate">{employee.name}</p>
-                <p className="text-[10px] text-indigo-300 truncate">{employee.role}</p>
+                <p className="text-xs font-semibold text-white truncate">{user?.name || employee.name}</p>
+                <p className="text-[10px] text-indigo-300 truncate">
+                  {user?.role || (systemRole === 'ADMIN' ? 'System Administrator' : (systemRole === 'HR_MANAGER' ? 'HR Manager' : employee.role))}
+                </p>
               </div>
             </div>
 
             <button 
-              onClick={() => alert("Sign out simulated.")}
+              onClick={async (e) => {
+                e.stopPropagation();
+                await logout();
+                navigate('/login');
+              }}
               title="Logout"
               className="p-1.5 rounded-lg text-slate-400 hover:text-rose-400 hover:bg-slate-700/60 transition-colors"
             >

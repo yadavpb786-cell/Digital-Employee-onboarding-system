@@ -1,5 +1,6 @@
 import React from 'react';
-import { X, Send, Clock, MapPin, Calendar, CheckCircle2, User } from 'lucide-react';
+import { useNavigate } from 'react-router-dom';
+import { X, Send, Clock, MapPin, Calendar, CheckCircle2, User, ExternalLink } from 'lucide-react';
 import { useOnboarding } from '../../context/OnboardingContext';
 
 export const HRMessageModal = () => {
@@ -105,6 +106,7 @@ export const HRMessageModal = () => {
 
 export const FirstDayPlanModal = () => {
   const { isFirstDayModalOpen, setIsFirstDayModalOpen, employee, firstDayPlan } = useOnboarding();
+  const navigate = useNavigate();
 
   if (!isFirstDayModalOpen) return null;
 
@@ -170,7 +172,18 @@ export const FirstDayPlanModal = () => {
         </div>
 
         {/* Footer */}
-        <div className="p-4 bg-slate-50 border-t border-slate-100 flex justify-end">
+        <div className="p-4 bg-slate-50 border-t border-slate-100 flex items-center justify-between">
+          <button
+            onClick={() => {
+              setIsFirstDayModalOpen(false);
+              navigate('/first-day');
+            }}
+            className="px-3.5 py-2 text-xs font-semibold text-indigo-600 hover:bg-indigo-50 rounded-xl transition-colors flex items-center gap-1.5"
+          >
+            <span>Open Detailed Itinerary</span>
+            <ExternalLink className="w-3.5 h-3.5" />
+          </button>
+
           <button
             onClick={() => setIsFirstDayModalOpen(false)}
             className="px-4 py-2 text-xs font-semibold text-white bg-indigo-600 hover:bg-indigo-700 rounded-xl shadow-nova-sm transition-all"

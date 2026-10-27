@@ -11,6 +11,32 @@ node_modules
 dist
 dist-ssr
 *.local
+.env
+.env.*
+!.env.example
+backend/.env
+backend/.env.*
+!backend/.env.example
+*.env
+
+# Python & Virtual Environments
+__pycache__/
+*.py[cod]
+*$py.class
+.Python
+env/
+venv/
+ENV/
+.venv/
+backend/env/
+backend/venv/
+backend/.venv/
+
+# Databases
+*.sqlite3
+*.sqlite3-journal
+db.sqlite3
+backend/db.sqlite3
 
 # Editor directories and files
 .vscode/*
@@ -22,3 +48,9 @@ dist-ssr
 *.njsproj
 *.sln
 *.sw?
+
+# Media & Uploads & Staticfiles
+media/
+backend/media/
+staticfiles/
+backend/staticfiles/

@@ -1,22 +1,32 @@
 import React, { useState } from 'react';
 import { HelpCircle, Search, MessageSquare, ChevronDown, Sparkles } from 'lucide-react';
 import { useOnboarding } from '../context/OnboardingContext';
+import { useAuth } from '../context/AuthContext';
 
 export const HelpPage = () => {
-  const { setIsHrModalOpen } = useOnboarding();
+  const { user } = useAuth();
+  const { employee, setIsHrModalOpen } = useOnboarding();
   const [openFaq, setOpenFaq] = useState(null);
+
+  const firstName = employee?.name
+    ? employee.name.trim().split(' ')[0]
+    : user?.name
+    ? user.name.trim().split(' ')[0]
+    : user?.first_name || 'there';
+
+  const hrPartnerName = employee?.hrSupport?.name || 'Priya Sharma';
 
   const faqs = [
     { q: 'When do I receive my laptop and work credentials?', a: 'Your workstation hardware and 2FA credentials will be assigned during IT Setup on your first day (09:30 AM IST).' },
     { q: 'How do I upload missing payroll and tax documents?', a: 'Navigate to the Documents tab in the left sidebar and click "Upload Custom Document".' },
     { q: 'Can I complete my training modules remotely before day one?', a: 'Yes! All orientation modules in the Training tab are accessible 24/7 on web and mobile.' },
-    { q: 'Who is my primary point of contact for onboarding questions?', a: 'Priya Sharma from People & Culture. Click the "Contact HR" button anytime to message her.' }
+    { q: 'Who is my primary point of contact for onboarding questions?', a: `${hrPartnerName} from People & Culture. Click the "Contact HR" button anytime to message her.` }
   ];
 
   return (
     <div className="space-y-6 animate-in fade-in duration-200">
       <div className="bg-gradient-to-r from-indigo-900 via-slate-900 to-indigo-950 text-white p-8 rounded-3xl shadow-nova-lg">
-        <h2 className="text-2xl font-black mb-2">How can we help you, Rahul?</h2>
+        <h2 className="text-2xl font-black mb-2">How can we help you, {firstName}?</h2>
         <p className="text-xs text-indigo-200 mb-5">Search our knowledge base or get direct assistance from HR Support.</p>
 
         <div className="relative max-w-xl">
@@ -55,7 +65,7 @@ export const HelpPage = () => {
       <div className="bg-indigo-50 border border-indigo-100 p-6 rounded-3xl flex flex-col sm:flex-row items-center justify-between gap-4">
         <div>
           <h4 className="text-sm font-bold text-indigo-950">Still need help with your onboarding?</h4>
-          <p className="text-xs text-indigo-700 mt-0.5">Reach out to Priya Sharma and the People Operations team.</p>
+          <p className="text-xs text-indigo-700 mt-0.5">Reach out to {hrPartnerName} and the People Operations team.</p>
         </div>
         <button
           onClick={() => setIsHrModalOpen(true)}

@@ -1,9 +1,11 @@
 import React, { useState } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { useOnboarding } from '../context/OnboardingContext';
 import { StatusBadge } from '../components/ui/StatusBadge';
-import { CheckSquare, Filter, Search, Calendar, Clock } from 'lucide-react';
+import { CheckSquare, Filter, Search, Calendar, Clock, ArrowRight } from 'lucide-react';
 
 export const TasksPage = () => {
+  const navigate = useNavigate();
   const { tasks, toggleTaskStatus } = useOnboarding();
   const [filter, setFilter] = useState('all');
   const [query, setQuery] = useState('');
@@ -76,16 +78,28 @@ export const TasksPage = () => {
               <span className="text-slate-400 text-[11px] flex items-center gap-1">
                 <Clock className="w-3 h-3" /> Due {task.dueDate}
               </span>
-              <button
-                onClick={() => toggleTaskStatus(task.id)}
-                className={`px-3 py-1 text-xs font-bold rounded-xl transition-all ${
-                  task.status === 'completed'
-                    ? 'bg-emerald-100 text-emerald-800'
-                    : 'bg-indigo-600 text-white hover:bg-indigo-700'
-                }`}
-              >
-                {task.status === 'completed' ? '✓ Done' : 'Toggle Completion'}
-              </button>
+              
+              <div className="flex items-center gap-2">
+                {task.actionPath && (
+                  <button
+                    onClick={() => navigate(task.actionPath)}
+                    className="px-2.5 py-1 text-xs font-semibold text-slate-600 hover:text-indigo-600 hover:bg-slate-100 rounded-xl transition-colors flex items-center gap-1"
+                  >
+                    <span>Open</span>
+                    <ArrowRight className="w-3 h-3" />
+                  </button>
+                )}
+                <button
+                  onClick={() => toggleTaskStatus(task.id)}
+                  className={`px-3 py-1 text-xs font-bold rounded-xl transition-all ${
+                    task.status === 'completed'
+                      ? 'bg-emerald-100 text-emerald-800'
+                      : 'bg-indigo-600 text-white hover:bg-indigo-700'
+                  }`}
+                >
+                  {task.status === 'completed' ? '✓ Done' : 'Toggle Completion'}
+                </button>
+              </div>
             </div>
           </div>
         ))}

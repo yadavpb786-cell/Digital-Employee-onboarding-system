@@ -1,12 +1,19 @@
 import React, { useRef, useEffect } from 'react';
-import { User, Settings, LogOut, Shield, Building2, ExternalLink } from 'lucide-react';
+import { User, Settings, LogOut, Shield, Building2, LayoutDashboard } from 'lucide-react';
 import { useOnboarding } from '../../context/OnboardingContext';
+import { useAuth } from '../../context/AuthContext';
 import { useNavigate } from 'react-router-dom';
 
 export const UserDropdown = ({ isOpen, onClose }) => {
   const { employee } = useOnboarding();
+  const { logout, systemRole, user, isEmployee, isHROrAdmin, isAdmin } = useAuth();
   const dropdownRef = useRef(null);
   const navigate = useNavigate();
+
+  const displayRole = systemRole || user?.system_role || 'EMPLOYEE';
+  const portalLabel = displayRole === 'ADMIN' 
+    ? 'Admin Console' 
+    : (displayRole === 'HR_MANAGER' ? 'HR Operations' : 'Employee Portal');
 
   useEffect(() => {
     const handleClickOutside = (event) => {
@@ -27,73 +34,83 @@ export const UserDropdown = ({ isOpen, onClose }) => {
       ref={dropdownRef}
       className="absolute right-0 top-12 w-64 bg-white rounded-2xl shadow-nova-lg border border-slate-200 z-50 overflow-hidden animate-in fade-in slide-in-from-top-2 duration-150"
     >
-      {/* Employee Header */}
+      {/* User Header */}
       <div className="p-4 bg-slate-900 text-white">
         <div className="flex items-center gap-3">
           <img 
-            src={employee.avatar} 
-            alt={employee.name} 
+            src={user?.avatar || employee.avatar} 
+            alt={user?.name || employee.name} 
             className="w-10 h-10 rounded-full object-cover ring-2 ring-indigo-500/50"
           />
           <div className="overflow-hidden">
-            <h4 className="font-semibold text-sm truncate">{employee.name}</h4>
-            <p className="text-xs text-indigo-300 truncate">{employee.role}</p>
+            <h4 className="font-semibold text-sm truncate">{user?.name || employee.name}</h4>
+            <p className="text-xs text-indigo-300 truncate">
+              {user?.role || (systemRole === 'ADMIN' ? 'System Administrator' : (systemRole === 'HR_MANAGER' ? 'HR Manager' : employee.role))}
+            </p>
             <span className="inline-block px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wider bg-indigo-500/30 text-indigo-200 rounded mt-1 border border-indigo-500/30">
-              Employee Portal
+              {portalLabel}
             </span>
           </div>
         </div>
       </div>
 
-      {/* Role Switcher Demo notice for future modules */}
+      {/* Role Indicator Banner */}
       <div className="px-3 py-2 bg-indigo-50/60 border-b border-slate-100">
         <p className="text-[10px] font-medium text-slate-500 flex items-center justify-between">
-          <span>Active Role: <strong className="text-indigo-700">EMPLOYEE</strong></span>
-          <span className="text-[9px] bg-slate-200 text-slate-600 px-1 rounded">SaaS Architecture</span>
+          <span>Active Role: <strong className="text-indigo-700">{displayRole}</strong></span>
+          <span className="text-[9px] bg-slate-200 text-slate-600 px-1 rounded font-mono">RBAC</span>
         </p>
       </div>
 
       {/* Action items */}
       <div className="p-1.5 divide-y divide-slate-100">
         <div className="py-1">
-          <button 
-            onClick={() => { navigate('/settings'); onClose(); }}
-            className="w-full px-3 py-2 text-left text-xs font-medium text-slate-700 hover:bg-slate-50 hover:text-indigo-600 rounded-lg flex items-center gap-2.5 transition-colors"
-          >
-            <User className="w-4 h-4 text-slate-400" />
-            <span>Profile & Account</span>
-          </button>
+          {isEmployee && (
+            <button 
+              onClick={() => { navigate('/profile'); onClose(); }}
+              className="w-full px-3 py-2 text-left text-xs font-medium text-slate-700 hover:bg-slate-50 hover:text-indigo-600 rounded-lg flex items-center gap-2.5 transition-colors"
+            >
+              <User className="w-4 h-4 text-slate-400" />
+              <span>My Profile</span>
+            </button>
+          )}
+
+          {isHROrAdmin && (
+            <button 
+              onClick={() => { navigate('/hr/dashboard'); onClose(); }}
+              className="w-full px-3 py-2 text-left text-xs font-medium text-slate-700 hover:bg-slate-50 hover:text-indigo-600 rounded-lg flex items-center gap-2.5 transition-colors"
+            >
+              <Building2 className="w-4 h-4 text-slate-400" />
+              <span>HR Dashboard</span>
+            </button>
+          )}
+
+          {isAdmin && (
+            <button 
+              onClick={() => { navigate('/admin/portal'); onClose(); }}
+              className="w-full px-3 py-2 text-left text-xs font-medium text-slate-700 hover:bg-slate-50 hover:text-indigo-600 rounded-lg flex items-center gap-2.5 transition-colors"
+            >
+              <Shield className="w-4 h-4 text-slate-400" />
+              <span>Admin Portal</span>
+            </button>
+          )}
+
           <button 
             onClick={() => { navigate('/settings'); onClose(); }}
             className="w-full px-3 py-2 text-left text-xs font-medium text-slate-700 hover:bg-slate-50 hover:text-indigo-600 rounded-lg flex items-center gap-2.5 transition-colors"
           >
             <Settings className="w-4 h-4 text-slate-400" />
-            <span>Preferences</span>
+            <span>Account Settings</span>
           </button>
-        </div>
-
-        {/* Future Portal preview section */}
-        <div className="py-1">
-          <div className="px-3 py-1 text-[10px] font-semibold uppercase tracking-wider text-slate-400">
-            Future Portals
-          </div>
-          <div className="px-3 py-1.5 text-xs text-slate-400 flex items-center justify-between opacity-60">
-            <span className="flex items-center gap-2">
-              <Building2 className="w-3.5 h-3.5" /> HR Manager Portal
-            </span>
-            <span className="text-[9px] bg-slate-100 px-1.5 py-0.5 rounded">Phase 2</span>
-          </div>
-          <div className="px-3 py-1.5 text-xs text-slate-400 flex items-center justify-between opacity-60">
-            <span className="flex items-center gap-2">
-              <Shield className="w-3.5 h-3.5" /> System Admin Portal
-            </span>
-            <span className="text-[9px] bg-slate-100 px-1.5 py-0.5 rounded">Phase 2</span>
-          </div>
         </div>
 
         <div className="pt-1">
           <button 
-            onClick={() => { alert("Logout simulated for demo mode"); onClose(); }}
+            onClick={async () => { 
+              onClose(); 
+              await logout(); 
+              navigate('/login'); 
+            }}
             className="w-full px-3 py-2 text-left text-xs font-medium text-rose-600 hover:bg-rose-50 rounded-lg flex items-center gap-2.5 transition-colors"
           >
             <LogOut className="w-4 h-4 text-rose-500" />

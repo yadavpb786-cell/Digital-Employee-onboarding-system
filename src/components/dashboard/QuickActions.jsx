@@ -21,7 +21,7 @@ export const QuickActions = () => {
       description: 'Update your personal information & contact details.',
       icon: User,
       color: 'bg-blue-50 text-blue-600 border-blue-100 hover:border-blue-300',
-      path: '/settings'
+      path: '/profile'
     },
     {
       title: 'Upload Documents',

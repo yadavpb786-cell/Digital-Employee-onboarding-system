@@ -2,12 +2,14 @@ import React, { useState } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
 import { Search, Bell, HelpCircle, Menu, ChevronRight, Sparkles } from 'lucide-react';
 import { useOnboarding } from '../../context/OnboardingContext';
+import { useAuth } from '../../context/AuthContext';
 import { NotificationDropdown } from '../ui/NotificationDropdown';
 import { UserDropdown } from '../ui/UserDropdown';
 
 export const TopNavbar = () => {
   const location = useLocation();
   const navigate = useNavigate();
+  const { isEmployee, user, systemRole } = useAuth();
   const { 
     employee, 
     unreadNotificationCount, 
@@ -23,6 +25,9 @@ export const TopNavbar = () => {
   // Generate dynamic title & breadcrumb based on route
   const getPageInfo = () => {
     const path = location.pathname;
+    if (path.startsWith('/hr/employees/')) {
+      return { title: 'Employee Onboarding Review', category: 'Talent & HR' };
+    }
     switch (path) {
       case '/dashboard':
         return { title: 'Dashboard', category: 'Overview' };
@@ -32,8 +37,28 @@ export const TopNavbar = () => {
         return { title: 'Onboarding Tasks', category: 'Action Required' };
       case '/documents':
         return { title: 'Document Center', category: 'Compliance' };
+      case '/offer-letter':
+        return { title: 'Offer Letter Acceptance', category: 'Compliance' };
       case '/training':
         return { title: 'Training Modules', category: 'Learning' };
+      case '/quiz':
+        return { title: 'Onboarding Knowledge Quiz', category: 'Learning' };
+      case '/first-day':
+        return { title: 'First Day Plan', category: 'Orientation' };
+      case '/feedback':
+        return { title: 'Onboarding Feedback', category: 'Experience' };
+      case '/profile':
+        return { title: 'Employee Profile', category: 'Profile' };
+      case '/hr/dashboard':
+        return { title: 'HR Dashboard', category: 'Talent & HR' };
+      case '/hr/employees':
+        return { title: 'Candidate & Employee Directory', category: 'Talent & HR' };
+      case '/hr/analytics':
+        return { title: 'HR Analytics & Reports', category: 'Talent & HR' };
+      case '/invitations':
+        return { title: 'Candidate Invitations', category: 'Talent & HR' };
+      case '/admin/portal':
+        return { title: 'System Administration Portal', category: 'Administration' };
       case '/calendar':
         return { title: 'Schedule & Events', category: 'Calendar' };
       case '/company':
@@ -47,9 +72,11 @@ export const TopNavbar = () => {
       case '/help':
         return { title: 'Help & Knowledge Center', category: 'Support' };
       case '/settings':
-        return { title: 'Account Settings', category: 'Profile' };
+        return { title: 'Account Settings', category: 'Account' };
+      case '/notifications':
+        return { title: 'In-App Notifications', category: 'Notifications' };
       default:
-        return { title: 'Dashboard', category: 'Overview' };
+        return { title: 'NOVA Tech Platform', category: 'Workspace' };
     }
   };
 
@@ -95,14 +122,16 @@ export const TopNavbar = () => {
           />
         </div>
 
-        {/* HR Quick Action */}
-        <button 
-          onClick={() => setIsHrModalOpen(true)}
-          className="hidden sm:flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold text-indigo-700 bg-indigo-50 hover:bg-indigo-100 rounded-xl border border-indigo-200/70 transition-all"
-        >
-          <Sparkles className="w-3.5 h-3.5 text-indigo-600" />
-          <span>Ask HR</span>
-        </button>
+        {/* HR Quick Action (Only for Employees) */}
+        {isEmployee && (
+          <button 
+            onClick={() => setIsHrModalOpen(true)}
+            className="hidden sm:flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold text-indigo-700 bg-indigo-50 hover:bg-indigo-100 rounded-xl border border-indigo-200/70 transition-all"
+          >
+            <Sparkles className="w-3.5 h-3.5 text-indigo-600" />
+            <span>Ask HR</span>
+          </button>
+        )}
 
         {/* Notification Bell Dropdown Container */}
         <div className="relative">
@@ -116,7 +145,9 @@ export const TopNavbar = () => {
           >
             <Bell className="w-5 h-5" />
             {unreadNotificationCount > 0 && (
-              <span className="absolute top-1.5 right-1.5 w-2.5 h-2.5 bg-indigo-600 rounded-full ring-2 ring-white animate-pulse" />
+              <span className="absolute -top-0.5 -right-0.5 min-w-[18px] h-[18px] px-1 bg-indigo-600 text-white text-[10px] font-bold rounded-full flex items-center justify-center ring-2 ring-white shadow-sm">
+                {unreadNotificationCount > 9 ? '9+' : unreadNotificationCount}
+              </span>
             )}
           </button>
 
@@ -147,13 +178,15 @@ export const TopNavbar = () => {
             className="flex items-center gap-3 p-1 rounded-xl hover:bg-slate-100 transition-colors"
           >
             <img 
-              src={employee.avatar} 
-              alt={employee.name} 
+              src={user?.avatar || employee.avatar} 
+              alt={user?.name || employee.name} 
               className="w-8 h-8 rounded-full object-cover ring-2 ring-indigo-600/30"
             />
             <div className="text-left hidden sm:block">
-              <p className="text-xs font-bold text-slate-900 leading-none">{employee.name}</p>
-              <p className="text-[10px] font-medium text-slate-500 mt-0.5 leading-none">New Employee</p>
+              <p className="text-xs font-bold text-slate-900 leading-none">{user?.name || employee.name}</p>
+              <p className="text-[10px] font-medium text-slate-500 mt-0.5 leading-none">
+                {systemRole === 'ADMIN' ? 'Administrator' : (systemRole === 'HR_MANAGER' ? 'HR Manager' : 'Employee')}
+              </p>
             </div>
           </button>
 
