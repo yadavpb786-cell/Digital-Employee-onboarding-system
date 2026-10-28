@@ -3515,6 +3515,37 @@ class LoginAuthenticationAndBootstrapTestCase(APITestCase):
             os.environ.pop('ENABLE_DEMO_BOOTSTRAP', None)
             os.environ.pop('DEMO_USER_PASSWORD', None)
 
+    def test_setup_demo_user_resilient_key_parsing(self):
+        import os
+        from django.core.management import call_command
+        from io import StringIO
+
+        out = StringIO()
+        # Set with trailing space and quotes
+        os.environ['ENABLE_DEMO_BOOTSTRAP '] = ' "True" '
+        os.environ['DEMO_USER_PASSWORD '] = ' "ResilientPass@2026" '
+        try:
+            call_command('setup_demo_user', username='rahul.kumar', stdout=out)
+            self.assertIn('completed successfully', out.getvalue())
+            rahul = User.objects.get(username='rahul.kumar')
+            self.assertTrue(rahul.check_password('ResilientPass@2026'))
+        finally:
+            os.environ.pop('ENABLE_DEMO_BOOTSTRAP ', None)
+            os.environ.pop('DEMO_USER_PASSWORD ', None)
+
+    def test_setup_demo_user_production_guard_disabled(self):
+        import os
+        from django.core.management import call_command
+        from io import StringIO
+
+        out = StringIO()
+        os.environ['RENDER'] = 'true'
+        try:
+            call_command('setup_demo_user', username='rahul.kumar', stdout=out)
+            self.assertIn('bootstrap is disabled in production', out.getvalue())
+        finally:
+            os.environ.pop('RENDER', None)
+
 
 
 

@@ -1,6 +1,7 @@
 import os
 import sys
 from django.core.management import call_command
+from .management.commands.setup_demo_user import _resolve_bootstrap_flag
 
 
 def handle_demo_bootstrap_post_migrate(sender, **kwargs):
@@ -10,16 +11,12 @@ def handle_demo_bootstrap_post_migrate(sender, **kwargs):
     if ENABLE_DEMO_BOOTSTRAP is explicitly enabled, the demo account is safely
     verified and linked without needing manual Render Shell access.
     """
-    bootstrap_enabled = (
-        os.getenv('ENABLE_DEMO_BOOTSTRAP', '').strip().lower() in ('true', '1', 'yes', 't') or
-        os.getenv('SETUP_DEMO_USER', '').strip().lower() in ('true', '1', 'yes', 't') or
-        os.getenv('BOOTSTRAP_DEMO_USER', '').strip().lower() in ('true', '1', 'yes', 't')
-    )
+    bootstrap_enabled, flag_source = _resolve_bootstrap_flag()
 
     if not bootstrap_enabled:
         return
 
-    sys.stdout.write("[post_migrate] ENABLE_DEMO_BOOTSTRAP detected. Invoking setup_demo_user...\n")
+    sys.stdout.write(f"[post_migrate] Demo bootstrap authorized via {flag_source}. Invoking setup_demo_user...\n")
     try:
         call_command('setup_demo_user')
     except Exception as exc:
