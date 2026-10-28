@@ -10,10 +10,7 @@ import {
   EyeOff, 
   ArrowRight, 
   AlertCircle, 
-  ShieldCheck, 
-  Sparkles,
-  KeyRound,
-  CheckCircle2
+  ShieldCheck
 } from 'lucide-react';
 
 export const LoginPage = () => {
@@ -63,13 +60,6 @@ export const LoginPage = () => {
       const targetDestination = getValidRedirectPath(requestedDestination, userRole);
       navigate(targetDestination, { replace: true });
     }
-  };
-
-  const handleFillDemo = (userVal, passVal) => {
-    setUsername(userVal);
-    setPassword(passVal);
-    setLocalError('');
-    clearError?.();
   };
 
   const displayError = localError || authError;
@@ -133,7 +123,7 @@ export const LoginPage = () => {
                   type="text"
                   value={username}
                   onChange={(e) => { setUsername(e.target.value); setLocalError(''); }}
-                  placeholder="e.g. rahul.kumar or rahul.kumar@novatech.io"
+                  placeholder="Enter your username, email, or employee ID"
                   disabled={isSubmitting}
                   autoComplete="username"
                   className="w-full pl-10 pr-4 py-2.5 bg-slate-950/70 border border-slate-700/80 rounded-xl text-sm text-white placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-indigo-500/80 focus:border-indigo-500 transition-all disabled:opacity-50"
@@ -197,72 +187,6 @@ export const LoginPage = () => {
             </button>
           </form>
 
-          {/* Quick Demo Fill Helper */}
-          <div className="mt-6 pt-5 border-t border-slate-800">
-            <div className="flex items-center justify-between mb-2">
-              <span className="text-[11px] font-semibold text-slate-400 uppercase tracking-wider flex items-center gap-1.5">
-                <Sparkles className="w-3 h-3 text-indigo-400" />
-                Demo Credentials
-              </span>
-              <span className="text-[10px] text-slate-500">1-Click Auto Fill</span>
-            </div>
-
-            <div className="space-y-2">
-              {[
-                {
-                  name: 'Rahul Kumar',
-                  user: 'rahul.kumar',
-                  pass: 'NovaTech@2026',
-                  role: 'EMPLOYEE',
-                  title: 'Software Engineer',
-                  initials: 'RK',
-                  badgeClass: 'bg-emerald-950/70 border-emerald-800/50 text-emerald-400'
-                },
-                {
-                  name: 'Arjun Mehta',
-                  user: 'arjun.mehta',
-                  pass: 'NovaTech@2026',
-                  role: 'HR_MANAGER',
-                  title: 'Engineering Director',
-                  initials: 'AM',
-                  badgeClass: 'bg-blue-950/70 border-blue-800/50 text-blue-400'
-                },
-                {
-                  name: 'Priya Sharma',
-                  user: 'priya.sharma',
-                  pass: 'NovaTech@2026',
-                  role: 'ADMIN',
-                  title: 'People & Culture Lead',
-                  initials: 'PS',
-                  badgeClass: 'bg-purple-950/70 border-purple-800/50 text-purple-400'
-                }
-              ].map((acc) => (
-                <button
-                  key={acc.user}
-                  type="button"
-                  onClick={() => handleFillDemo(acc.user, acc.pass)}
-                  className="w-full p-2 rounded-xl bg-slate-950/60 border border-slate-800 hover:border-indigo-500/50 hover:bg-slate-800/40 text-left transition-all group"
-                >
-                  <div className="flex items-center justify-between">
-                    <div className="flex items-center gap-2">
-                      <div className="w-6 h-6 rounded-full bg-indigo-600/20 text-indigo-400 flex items-center justify-center font-bold text-[10px]">
-                        {acc.initials}
-                      </div>
-                      <div>
-                        <p className="text-xs font-medium text-white group-hover:text-indigo-300 transition-colors">
-                          {acc.name} <span className="text-[10px] font-mono text-slate-400">({acc.user})</span>
-                        </p>
-                        <p className="text-[10px] text-slate-400">{acc.title}</p>
-                      </div>
-                    </div>
-                    <span className={`text-[9px] font-bold px-2 py-0.5 rounded border ${acc.badgeClass}`}>
-                      {acc.role}
-                    </span>
-                  </div>
-                </button>
-              ))}
-            </div>
-          </div>
         </div>
 
         {/* Footer info */}
