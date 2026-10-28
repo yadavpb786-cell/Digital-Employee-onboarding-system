@@ -1571,7 +1571,7 @@ class CandidateInvitationViewSet(viewsets.ModelViewSet):
         expires_at = timezone.now() + timezone.timedelta(hours=48)
 
         # Configurable frontend base URL (supports local dev and deployed Vercel URL)
-        frontend_base = getattr(settings, 'FRONTEND_URL', None) or request.headers.get('Origin') or 'http://localhost:5173'
+        frontend_base = getattr(settings, 'FRONTEND_URL', None) or request.headers.get('Origin') or 'https://digital-employee-onboarding-system.vercel.app'
         invitation_url = f"{frontend_base.rstrip('/')}/register?token={raw_token}"
 
         # Transactional execution: do not report success or save invitation if email delivery fails
@@ -1664,7 +1664,7 @@ class CandidateInvitationViewSet(viewsets.ModelViewSet):
         token_hash = hashlib.sha256(raw_token.encode('utf-8')).hexdigest()
         expires_at = timezone.now() + timezone.timedelta(hours=48)
 
-        frontend_base = getattr(settings, 'FRONTEND_URL', None) or request.headers.get('Origin') or 'http://localhost:5173'
+        frontend_base = getattr(settings, 'FRONTEND_URL', None) or request.headers.get('Origin') or 'https://digital-employee-onboarding-system.vercel.app'
         invitation_url = f"{frontend_base.rstrip('/')}/register?token={raw_token}"
 
         try:

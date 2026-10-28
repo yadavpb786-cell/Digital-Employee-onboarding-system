@@ -1331,6 +1331,26 @@ const liveAdapter = {
   }
 };
 
+// Critical methods where falling back to mock in production would falsify results,
+// mask SMTP delivery failures, or cause dangerous state desynchronization.
+const LIVE_ONLY_METHODS = new Set([
+  'createInvitation',
+  'resendInvitation',
+  'cancelInvitation',
+  'getInvitationPreview',
+  'acceptInvitation',
+  'uploadDocument',
+  'verifyDocument',
+  'acceptOfferLetter',
+  'acknowledgePolicy',
+  'submitFeedback',
+  'updateProfile',
+  'submitQuiz',
+  'updateTrainingProgress',
+  'adminUpdateStage',
+  'toggleStage'
+]);
+
 // ==============================================================================
 // 4. Main Service Interface with Graceful Fallback
 // ==============================================================================
@@ -1342,8 +1362,15 @@ const executeWithFallback = async (methodName, ...args) => {
   try {
     return await liveAdapter[methodName](...args);
   } catch (err) {
-    console.warn(`[onboardingService.${methodName}] Live API error, using graceful fallback:`, err.message || err);
-    // Fall back to mock adapter to prevent app crashes while backend is starting or offline
+    console.warn(`[onboardingService.${methodName}] Live API error:`, err.message || err);
+
+    // CRITICAL: Invitation lifecycle, registration, and write mutations must NEVER
+    // fall back to mock in production. Throw the real server error so UI shows true status.
+    if (LIVE_ONLY_METHODS.has(methodName)) {
+      throw err;
+    }
+
+    // Fall back to mock adapter only for read-only preview/dashboard rendering while backend is starting
     if (typeof mockAdapter[methodName] === 'function') {
       return await mockAdapter[methodName](...args);
     }

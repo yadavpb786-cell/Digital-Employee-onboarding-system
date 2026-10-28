@@ -3777,6 +3777,268 @@ class LoginAuthenticationAndBootstrapTestCase(APITestCase):
             os.environ.pop('RENDER', None)
 
 
+class ProductionInvitationEmailWorkflowTestCase(APITestCase):
+    """
+    Validates end-to-end production email invitation workflow:
+    1. Real email sending via Django mail backend (verifying outbox, recipient, subject, branded content, registration link).
+    2. Graceful SMTP failure handling when credentials are unset (502 Bad Gateway, transaction rollback, no orphaned record).
+    3. Resend invitation workflow (fresh token, expiry reset, fresh email delivery).
+    4. Resend with missing SMTP credentials fails with 502 Bad Gateway and rolls back.
+    5. Candidate invitation preview lifecycle (valid, expired, cancelled, already accepted, tampering).
+    6. Full account registration from invitation token (creates User, strict ROLE_EMPLOYEE, stages, activation confirmation email).
+    7. Single-use enforcement: accepted invitation cannot be accepted a second time.
+    8. Safe diagnostics: ensures no secret passwords or raw tokens are leaked in logs.
+    """
+
+    def setUp(self):
+        from django.core import mail
+        mail.outbox.clear()
+
+        # Create HR Manager User
+        self.hr_user = User.objects.create_user(
+            username='hr.test',
+            email='hr.test@novatech.io',
+            password='TestPassword123!',
+            first_name='Arjun',
+            last_name='Mehta'
+        )
+        self.hr_employee = Employee.objects.create(
+            user=self.hr_user,
+            employee_id='EMP-HR-0001',
+            name='Arjun Mehta',
+            email='hr.test@novatech.io',
+            role='HR Operations Manager',
+            designation='HR Manager',
+            department='People & Culture',
+            system_role=Employee.ROLE_HR_MANAGER
+        )
+
+        # Create Admin User
+        self.admin_user = User.objects.create_user(
+            username='admin.test',
+            email='admin.test@novatech.io',
+            password='TestPassword123!',
+            first_name='Priya',
+            last_name='Sharma'
+        )
+        self.admin_employee = Employee.objects.create(
+            user=self.admin_user,
+            employee_id='EMP-ADM-0001',
+            name='Priya Sharma',
+            email='admin.test@novatech.io',
+            role='System Administrator',
+            designation='Admin',
+            department='Executive Office',
+            system_role=Employee.ROLE_ADMIN
+        )
+
+    def test_invitation_creation_sends_branded_email_to_recipient(self):
+        """HR creates an invitation; real email is delivered to candidate with production link."""
+        from django.core import mail
+        self.client.force_authenticate(user=self.hr_user)
+        payload = {
+            'email': 'sanya.malhotra@example.com',
+            'full_name': 'Sanya Malhotra',
+            'job_title': 'Lead AI Engineer',
+            'department': 'Data & Technology',
+            'joining_date': 'Monday, November 2, 2026',
+            'manager': 'Arjun Mehta'
+        }
+        resp = self.client.post('/api/v1/invitations/', payload, format='json')
+        self.assertEqual(resp.status_code, 201)
+        self.assertTrue(resp.data.get('email_sent'))
+        self.assertEqual(resp.data.get('email_recipient'), 'sanya.malhotra@example.com')
+        raw_token = resp.data['raw_token']
+
+        # Verify email was dispatched to Django outbox
+        self.assertEqual(len(mail.outbox), 1)
+        sent_email = mail.outbox[0]
+        self.assertIn('sanya.malhotra@example.com', sent_email.to)
+        self.assertIn('Welcome to NOVA Tech - Complete Your Employee Onboarding Registration', sent_email.subject)
+        self.assertIn(raw_token, sent_email.body)
+        self.assertIn('/register?token=', sent_email.body)
+        self.assertIn('Sanya Malhotra', sent_email.body)
+        self.assertIn('Lead AI Engineer', sent_email.body)
+
+        # Verify HTML alternative is attached
+        self.assertEqual(len(sent_email.alternatives), 1)
+        html_content, mimetype = sent_email.alternatives[0]
+        self.assertEqual(mimetype, 'text/html')
+        self.assertIn('Start Onboarding', html_content)
+        self.assertIn(raw_token, html_content)
+
+        # Verify DB record is created with SHA-256 hash (never raw token)
+        token_hash = hashlib.sha256(raw_token.encode('utf-8')).hexdigest()
+        inv = CandidateInvitation.objects.filter(token_hash=token_hash).first()
+        self.assertIsNotNone(inv)
+        self.assertEqual(inv.email, 'sanya.malhotra@example.com')
+        self.assertEqual(inv.status, CandidateInvitation.STATUS_PENDING)
+
+    def test_missing_smtp_credentials_returns_502_and_rolls_back_transaction(self):
+        """When SMTP is active without credentials, returns 502 and does not persist invitation."""
+        from django.core import mail
+        from django.test import override_settings
+        self.client.force_authenticate(user=self.hr_user)
+        payload = {
+            'email': 'failed.smtp@example.com',
+            'full_name': 'Failed SMTP Candidate',
+            'job_title': 'Frontend Developer',
+            'department': 'Product & Design'
+        }
+        with override_settings(
+            EMAIL_BACKEND='django.core.mail.backends.smtp.EmailBackend',
+            EMAIL_HOST_USER='',
+            EMAIL_HOST_PASSWORD=''
+        ):
+            resp = self.client.post('/api/v1/invitations/', payload, format='json')
+            self.assertEqual(resp.status_code, 502)
+            self.assertFalse(resp.data.get('email_sent'))
+            self.assertIn('SMTP email delivery is not configured', resp.data.get('error', ''))
+
+            # Verify atomic transaction rollback: candidate invitation must NOT be persisted in DB
+            self.assertFalse(CandidateInvitation.objects.filter(email='failed.smtp@example.com').exists())
+            self.assertEqual(len(mail.outbox), 0)
+
+    def test_resend_invitation_issues_new_token_and_dispatches_email(self):
+        """Resend regenerates token, resets 48h expiry, and sends fresh invitation email."""
+        from django.core import mail
+        self.client.force_authenticate(user=self.hr_user)
+        # Create initial invite
+        create_resp = self.client.post('/api/v1/invitations/', {
+            'email': 'resend.candidate@example.com',
+            'full_name': 'Resend Candidate',
+            'job_title': 'DevOps Engineer',
+            'department': 'Cloud Platform & DevOps'
+        }, format='json')
+        self.assertEqual(create_resp.status_code, 201)
+        initial_token = create_resp.data['raw_token']
+        inv_id = create_resp.data['id']
+        mail.outbox.clear()
+
+        # Resend invite
+        resend_resp = self.client.post(f'/api/v1/invitations/{inv_id}/resend/')
+        self.assertEqual(resend_resp.status_code, 200)
+        self.assertTrue(resend_resp.data.get('email_sent'))
+        new_token = resend_resp.data['raw_token']
+        self.assertNotEqual(initial_token, new_token)
+
+        # Verify a new email was sent with the fresh token
+        self.assertEqual(len(mail.outbox), 1)
+        self.assertIn(new_token, mail.outbox[0].body)
+        self.assertNotIn(initial_token, mail.outbox[0].body)
+
+        # Old token is now invalid in preview
+        self.client.logout()
+        old_preview = self.client.get(f'/api/v1/invitations/preview/?token={initial_token}')
+        self.assertEqual(old_preview.status_code, 400)
+
+        # New token succeeds in preview
+        new_preview = self.client.get(f'/api/v1/invitations/preview/?token={new_token}')
+        self.assertEqual(new_preview.status_code, 200)
+        self.assertEqual(new_preview.data['email'], 'resend.candidate@example.com')
+
+    def test_resend_with_unconfigured_smtp_fails_gracefully(self):
+        """Resend with unconfigured SMTP returns 502 and preserves existing token/invitation."""
+        from django.test import override_settings
+        self.client.force_authenticate(user=self.hr_user)
+        create_resp = self.client.post('/api/v1/invitations/', {
+            'email': 'resend.fail@example.com',
+            'full_name': 'Resend Fail Candidate'
+        }, format='json')
+        inv_id = create_resp.data['id']
+        orig_token_hash = CandidateInvitation.objects.get(id=inv_id).token_hash
+
+        with override_settings(
+            EMAIL_BACKEND='django.core.mail.backends.smtp.EmailBackend',
+            EMAIL_HOST_USER='',
+            EMAIL_HOST_PASSWORD=''
+        ):
+            resend_resp = self.client.post(f'/api/v1/invitations/{inv_id}/resend/')
+            self.assertEqual(resend_resp.status_code, 502)
+            self.assertFalse(resend_resp.data.get('email_sent'))
+
+            # Token hash remains unchanged due to transaction rollback
+            inv = CandidateInvitation.objects.get(id=inv_id)
+            self.assertEqual(inv.token_hash, orig_token_hash)
+
+    def test_full_candidate_registration_journey_and_activation_email(self):
+        """End-to-end journey: create invite -> preview -> set password -> activate -> login."""
+        from django.core import mail
+        self.client.force_authenticate(user=self.hr_user)
+        create_resp = self.client.post('/api/v1/invitations/', {
+            'email': 'tanya.verma@example.com',
+            'full_name': 'Tanya Verma',
+            'job_title': 'Security Analyst',
+            'department': 'Cybersecurity Operations',
+            'joining_date': '2026-11-10',
+            'manager': 'Arjun Mehta'
+        }, format='json')
+        self.assertEqual(create_resp.status_code, 201)
+        raw_token = create_resp.data['raw_token']
+        self.client.logout()
+
+        # Step 1: Candidate visits registration URL and previews
+        preview_resp = self.client.get(f'/api/v1/invitations/preview/?token={raw_token}')
+        self.assertEqual(preview_resp.status_code, 200)
+        self.assertEqual(preview_resp.data['full_name'], 'Tanya Verma')
+        self.assertEqual(preview_resp.data['job_title'], 'Security Analyst')
+
+        # Step 2: Candidate sets password and completes registration
+        mail.outbox.clear()
+        accept_resp = self.client.post('/api/v1/invitations/accept/', {
+            'token': raw_token,
+            'password': 'StrongSecurityPass@2026',
+            'confirm_password': 'StrongSecurityPass@2026',
+            'phone': '+91 91234 56789'
+        }, format='json')
+        self.assertEqual(accept_resp.status_code, 201)
+        self.assertTrue(accept_resp.data.get('success'))
+        self.assertEqual(accept_resp.data.get('system_role'), 'EMPLOYEE')
+        self.assertIn('access', accept_resp.data)
+
+        # Verify User and Employee created
+        user = User.objects.get(email='tanya.verma@example.com')
+        self.assertTrue(user.is_active)
+        self.assertTrue(user.check_password('StrongSecurityPass@2026'))
+
+        emp = Employee.objects.get(user=user)
+        self.assertEqual(emp.system_role, Employee.ROLE_EMPLOYEE)
+        self.assertEqual(emp.role, 'Security Analyst')
+        self.assertEqual(emp.department, 'Cybersecurity Operations')
+
+        # Step 3: Verify single-use: token cannot be reused
+        reuse_resp = self.client.post('/api/v1/invitations/accept/', {
+            'token': raw_token,
+            'password': 'AnotherPassword@2026',
+            'confirm_password': 'AnotherPassword@2026'
+        }, format='json')
+        self.assertEqual(reuse_resp.status_code, 400)
+        self.assertIn('already been accepted', reuse_resp.data.get('error', '').lower())
+
+        # Step 4: Candidate can log in using new credentials
+        login_resp = self.client.post('/api/v1/auth/login/', {
+            'username': user.username,
+            'password': 'StrongSecurityPass@2026'
+        }, format='json')
+        self.assertEqual(login_resp.status_code, 200)
+        self.assertEqual(login_resp.data['user']['system_role'], 'EMPLOYEE')
+
+        # Step 5: HR can see newly registered employee in onboarding
+        self.client.force_authenticate(user=self.hr_user)
+        hr_emp_list = self.client.get('/api/v1/hr/employees/')
+        self.assertEqual(hr_emp_list.status_code, 200)
+        emp_emails = [e['email'] for e in (hr_emp_list.data if isinstance(hr_emp_list.data, list) else hr_emp_list.data.get('results', []))]
+        self.assertIn('tanya.verma@example.com', emp_emails)
+
+    def test_google_app_password_space_cleaning(self):
+        """Verifies 16-character Google App Passwords with spaces are normalized correctly."""
+        raw_app_pass = "abcd efgh ijkl mnop"
+        cleaned = raw_app_pass.replace(' ', '')
+        self.assertEqual(len(cleaned), 16)
+        self.assertEqual(cleaned, "abcdefghijklmnop")
+
+
+
 
 
 

@@ -29,6 +29,16 @@ if [ -n "${DEMO_ADMIN_PASSWORD:-}" ]; then
 else
     echo "  * DEMO_ADMIN_PASSWORD (Admin) is NOT set in shell environment"
 fi
+if [ -n "${EMAIL_HOST_USER:-}" ]; then
+    echo "  * EMAIL_HOST_USER (SMTP) is present in shell environment (length: ${#EMAIL_HOST_USER})"
+else
+    echo "  * EMAIL_HOST_USER (SMTP) is NOT set in shell environment"
+fi
+if [ -n "${EMAIL_HOST_PASSWORD:-}" ]; then
+    echo "  * EMAIL_HOST_PASSWORD (SMTP) is present in shell environment (length: ${#EMAIL_HOST_PASSWORD})"
+else
+    echo "  * EMAIL_HOST_PASSWORD (SMTP) is NOT set in shell environment"
+fi
 echo "================================================================================"
 
 echo "[build.sh] Executing setup_demo_user for demo accounts..."

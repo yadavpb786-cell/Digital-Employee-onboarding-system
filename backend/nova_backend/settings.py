@@ -197,7 +197,12 @@ SIMPLE_JWT = {
 }
 
 # Configurable Frontend Base URL for email invitation links (supports local dev and deployed Vercel URL)
-FRONTEND_URL = os.getenv('FRONTEND_URL', 'http://localhost:5173').rstrip('/')
+_default_frontend = (
+    'https://digital-employee-onboarding-system.vercel.app'
+    if (render_hostname or os.getenv('RENDER') or not DEBUG)
+    else 'http://localhost:5173'
+)
+FRONTEND_URL = os.getenv('FRONTEND_URL', _default_frontend).strip().rstrip('/')
 
 # CORS & CSRF Configuration
 _cors_defaults = [
@@ -240,13 +245,44 @@ if 'https://*.onrender.com' not in CSRF_TRUSTED_ORIGINS:
 # Configurable via environment variables (SMTP with Gmail, SendGrid, Amazon SES, or Console/Locmem for dev/testing)
 EMAIL_BACKEND = os.getenv('EMAIL_BACKEND', 'django.core.mail.backends.smtp.EmailBackend')
 EMAIL_HOST = os.getenv('EMAIL_HOST', 'smtp.gmail.com')
-EMAIL_PORT = int(os.getenv('EMAIL_PORT', '587'))
-EMAIL_USE_TLS = os.getenv('EMAIL_USE_TLS', 'True').lower() in ('true', '1', 'yes')
-EMAIL_USE_SSL = os.getenv('EMAIL_USE_SSL', 'False').lower() in ('true', '1', 'yes')
+
+try:
+    EMAIL_PORT = int(os.getenv('EMAIL_PORT', '587'))
+except ValueError:
+    EMAIL_PORT = 587
+
+_use_ssl_env = os.getenv('EMAIL_USE_SSL')
+_use_tls_env = os.getenv('EMAIL_USE_TLS')
+
+if _use_ssl_env is not None:
+    EMAIL_USE_SSL = _use_ssl_env.lower() in ('true', '1', 'yes')
+else:
+    EMAIL_USE_SSL = (EMAIL_PORT == 465)
+
+if _use_tls_env is not None:
+    EMAIL_USE_TLS = _use_tls_env.lower() in ('true', '1', 'yes')
+else:
+    EMAIL_USE_TLS = not EMAIL_USE_SSL and (EMAIL_PORT == 587 or EMAIL_PORT == 25)
+
+# Ensure mutual exclusivity as enforced by Django smtp.EmailBackend
+if EMAIL_USE_SSL and EMAIL_USE_TLS:
+    if EMAIL_PORT == 465:
+        EMAIL_USE_TLS = False
+    else:
+        EMAIL_USE_SSL = False
+
 EMAIL_HOST_USER = os.getenv('EMAIL_HOST_USER', '').strip()
-EMAIL_HOST_PASSWORD = os.getenv('EMAIL_HOST_PASSWORD', '').strip()
+
+# Handle Google App Passwords that may be pasted with 4x4 grouping spaces (e.g. "abcd efgh ijkl mnop")
+_raw_email_pass = os.getenv('EMAIL_HOST_PASSWORD', '').strip()
+if len(_raw_email_pass.replace(' ', '')) == 16 and ' ' in _raw_email_pass:
+    EMAIL_HOST_PASSWORD = _raw_email_pass.replace(' ', '')
+else:
+    EMAIL_HOST_PASSWORD = _raw_email_pass
+
 DEFAULT_FROM_EMAIL = os.getenv('DEFAULT_FROM_EMAIL', '').strip() or (
     f"NOVA Tech Onboarding <{EMAIL_HOST_USER}>" if EMAIL_HOST_USER else 'NOVA Tech Onboarding <onboarding@novatech.io>'
 )
-EMAIL_TIMEOUT = int(os.getenv('EMAIL_TIMEOUT', '10'))
+EMAIL_TIMEOUT = int(os.getenv('EMAIL_TIMEOUT', '15'))
+
 

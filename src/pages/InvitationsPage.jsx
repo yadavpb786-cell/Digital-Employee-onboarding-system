@@ -86,6 +86,10 @@ export const InvitationsPage = () => {
       };
 
       const res = await onboardingService.createInvitation(payload);
+      if (res && res.email_sent === false) {
+        setFormError(res.error || res.detail || 'Invitation email delivery failed via SMTP.');
+        return;
+      }
       setNewlyCreatedInvite(res);
 
       // Reset form
@@ -119,6 +123,10 @@ export const InvitationsPage = () => {
     setResendSuccessMsg('');
     try {
       const res = await onboardingService.resendInvitation(id);
+      if (res && res.email_sent === false) {
+        alert(res.error || res.detail || 'Failed to resend invitation email via SMTP.');
+        return;
+      }
       setResendSuccessMsg(`Invitation email successfully resent to ${res.email || 'candidate'}.`);
       await fetchInvitations();
       setTimeout(() => setResendSuccessMsg(''), 6000);

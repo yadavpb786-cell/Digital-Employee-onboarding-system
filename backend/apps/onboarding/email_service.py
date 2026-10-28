@@ -5,6 +5,8 @@ via configurable SMTP (e.g. Gmail, SendGrid, Amazon SES) or dev backends.
 """
 
 import logging
+import socket
+import smtplib
 from smtplib import SMTPException
 from django.conf import settings
 from django.core.mail import EmailMultiAlternatives
@@ -38,14 +40,32 @@ def send_invitation_email(invitation, raw_token, invitation_url):
     backend_name = getattr(settings, 'EMAIL_BACKEND', '') or ''
     host_user = getattr(settings, 'EMAIL_HOST_USER', '') or ''
     host_password = getattr(settings, 'EMAIL_HOST_PASSWORD', '') or ''
+    email_host = getattr(settings, 'EMAIL_HOST', 'smtp.gmail.com')
+    email_port = getattr(settings, 'EMAIL_PORT', 587)
+    use_tls = getattr(settings, 'EMAIL_USE_TLS', False)
+    use_ssl = getattr(settings, 'EMAIL_USE_SSL', False)
+    from_email = getattr(settings, 'DEFAULT_FROM_EMAIL', None) or 'NOVA Tech Onboarding <onboarding@novatech.io>'
+
+    # Safe diagnostics logging (never logs secret passwords or invitation tokens)
+    logger.info(
+        f"[email_service:diagnostics] Backend: {backend_name} | Host: {email_host}:{email_port} | "
+        f"TLS: {use_tls} | SSL: {use_ssl} | From: {from_email} | Recipient: {recipient_email} | "
+        f"User configured: {bool(host_user)} ({len(host_user)} chars) | "
+        f"Password configured: {bool(host_password)} ({len(host_password)} chars)"
+    )
 
     if 'smtp.EmailBackend' in backend_name and (not host_user or not host_password):
+        missing = []
+        if not host_user:
+            missing.append("EMAIL_HOST_USER")
+        if not host_password:
+            missing.append("EMAIL_HOST_PASSWORD")
         error_msg = (
-            "SMTP email delivery is not configured. Please configure EMAIL_HOST_USER and "
-            "EMAIL_HOST_PASSWORD in backend/.env to send real invitation emails, or configure "
-            "EMAIL_BACKEND='django.core.mail.backends.console.EmailBackend' for local testing."
+            f"SMTP email delivery is not configured on Render. Missing environment variable(s): {', '.join(missing)}. "
+            f"Please configure EMAIL_HOST_USER (e.g. your Gmail address) and EMAIL_HOST_PASSWORD (16-character Google App Password) "
+            f"in Render Dashboard Environment settings to send live invitation emails."
         )
-        logger.error(error_msg)
+        logger.error(f"[email_service:unconfigured] {error_msg}")
         raise EmailDeliveryError(error_msg)
 
     # Format dates
@@ -230,13 +250,28 @@ NOVA Tech Platform
         logger.info(f"Successfully delivered onboarding invitation email to {recipient_email} for {invitation.full_name}.")
         return True
 
+    except smtplib.SMTPAuthenticationError as exc:
+        err_msg = (
+            f"SMTP authentication failed for '{host_user}'. "
+            f"Please verify EMAIL_HOST_USER and EMAIL_HOST_PASSWORD in Render Dashboard. "
+            f"If using Gmail, ensure 2-Step Verification is active and use a 16-character Google App Password."
+        )
+        logger.error(f"[email_service:auth_error] {err_msg} (SMTP code: {getattr(exc, 'smtp_code', 'unknown')})")
+        raise EmailDeliveryError(err_msg) from exc
+    except (smtplib.SMTPConnectError, socket.timeout, TimeoutError) as exc:
+        err_msg = (
+            f"Failed to connect to SMTP server ({email_host}:{email_port}). "
+            f"Network connection timed out or port is blocked."
+        )
+        logger.error(f"[email_service:connect_error] {err_msg}: {exc}")
+        raise EmailDeliveryError(err_msg) from exc
     except (SMTPException, OSError, ConnectionError) as exc:
         err_msg = f"Failed to deliver invitation email via SMTP to {recipient_email}: {str(exc)}"
-        logger.error(err_msg, exc_info=True)
+        logger.error(f"[email_service:smtp_error] {err_msg}", exc_info=True)
         raise EmailDeliveryError(err_msg) from exc
     except Exception as exc:
         err_msg = f"Unexpected failure sending invitation email to {recipient_email}: {str(exc)}"
-        logger.error(err_msg, exc_info=True)
+        logger.error(f"[email_service:unexpected_error] {err_msg}", exc_info=True)
         raise EmailDeliveryError(err_msg) from exc
 
 
@@ -254,9 +289,10 @@ def send_activation_confirmation_email(employee):
 
     if 'smtp.EmailBackend' in backend_name and (not host_user or not host_password):
         # Do not fail activation if confirmation email cannot be sent due to unconfigured SMTP
+        logger.info("[email_service] Skipping optional activation confirmation email: SMTP unconfigured.")
         return False
 
-    frontend_url = getattr(settings, 'FRONTEND_URL', 'http://localhost:5173').rstrip('/')
+    frontend_url = getattr(settings, 'FRONTEND_URL', 'https://digital-employee-onboarding-system.vercel.app').rstrip('/')
     login_url = f"{frontend_url}/login"
 
     subject = f"Your NOVA Tech Employee Account is Active - Welcome Onboard"
