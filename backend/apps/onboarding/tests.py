@@ -3609,11 +3609,173 @@ class LoginAuthenticationAndBootstrapTestCase(APITestCase):
             logs = out.getvalue()
             self.assertIn('[setup_demo_user:diagnostics]', logs)
             self.assertIn('bootstrap_flag_present: True', logs)
-            self.assertIn('password_present: True', logs)
+            self.assertIn('employee_password_present: True', logs)
             self.assertNotIn(secret_pass, logs)
         finally:
             os.environ.pop('ENABLE_DEMO_BOOTSTRAP', None)
             os.environ.pop('DEMO_USER_PASSWORD', None)
+
+    def test_setup_admin_hr_users_creates_and_links_accounts(self):
+        import os
+        from django.core.management import call_command
+        from io import StringIO
+
+        out = StringIO()
+        os.environ['ENABLE_DEMO_BOOTSTRAP'] = 'true'
+        os.environ['DEMO_HR_PASSWORD'] = 'ArjunHrPass@2026'
+        os.environ['DEMO_ADMIN_PASSWORD'] = 'PriyaAdminPass@2026'
+        try:
+            call_command('setup_admin_hr_users', stdout=out)
+            self.assertIn('Successfully configured', out.getvalue())
+
+            # Check HR Manager account
+            arjun = User.objects.get(username='arjun.mehta')
+            self.assertTrue(arjun.check_password('ArjunHrPass@2026'))
+            self.assertTrue(arjun.is_active)
+            emp_arjun = Employee.objects.get(user=arjun)
+            self.assertEqual(emp_arjun.employee_id, 'EMP-2026-0010')
+            self.assertEqual(emp_arjun.system_role, Employee.ROLE_HR_MANAGER)
+            self.assertTrue(hasattr(emp_arjun, 'profile'))
+
+            # Check Admin account
+            priya = User.objects.get(username='priya.sharma')
+            self.assertTrue(priya.check_password('PriyaAdminPass@2026'))
+            self.assertTrue(priya.is_active)
+            self.assertTrue(priya.is_staff)
+            self.assertTrue(priya.is_superuser)
+            emp_priya = Employee.objects.get(user=priya)
+            self.assertEqual(emp_priya.employee_id, 'EMP-2026-0012')
+            self.assertEqual(emp_priya.system_role, Employee.ROLE_ADMIN)
+            self.assertTrue(hasattr(emp_priya, 'profile'))
+        finally:
+            os.environ.pop('ENABLE_DEMO_BOOTSTRAP', None)
+            os.environ.pop('DEMO_HR_PASSWORD', None)
+            os.environ.pop('DEMO_ADMIN_PASSWORD', None)
+
+    def test_setup_demo_user_all_preserves_employee_and_configures_hr_admin(self):
+        import os
+        from django.core.management import call_command
+        from io import StringIO
+
+        # 1. Pre-create rahul.kumar with specific password
+        rahul, _ = User.objects.get_or_create(username='rahul.kumar', defaults={'email': 'rahul.kumar@novatech.io'})
+        rahul.set_password('RahulOriginalWorkingPass@2026')
+        rahul.save()
+
+        out = StringIO()
+        os.environ['ENABLE_DEMO_BOOTSTRAP'] = 'true'
+        os.environ['DEMO_HR_PASSWORD'] = 'SeparateHrPass@2026'
+        os.environ['DEMO_ADMIN_PASSWORD'] = 'SeparateAdminPass@2026'
+        try:
+            call_command('setup_demo_user', username='all', stdout=out)
+            logs = out.getvalue()
+            self.assertIn('Preserved existing credentials for User \'rahul.kumar\'', logs)
+
+            # Rahul's password was untouched and preserved!
+            rahul.refresh_from_db()
+            self.assertTrue(rahul.check_password('RahulOriginalWorkingPass@2026'))
+
+            # Arjun and Priya were created with their separate passwords
+            arjun = User.objects.get(username='arjun.mehta')
+            self.assertTrue(arjun.check_password('SeparateHrPass@2026'))
+            self.assertEqual(arjun.employee.system_role, Employee.ROLE_HR_MANAGER)
+
+            priya = User.objects.get(username='priya.sharma')
+            self.assertTrue(priya.check_password('SeparateAdminPass@2026'))
+            self.assertEqual(priya.employee.system_role, Employee.ROLE_ADMIN)
+        finally:
+            os.environ.pop('ENABLE_DEMO_BOOTSTRAP', None)
+            os.environ.pop('DEMO_HR_PASSWORD', None)
+            os.environ.pop('DEMO_ADMIN_PASSWORD', None)
+
+    def test_hr_manager_login_and_role_permissions(self):
+        import os
+        from django.core.management import call_command
+
+        os.environ['ENABLE_DEMO_BOOTSTRAP'] = 'true'
+        os.environ['DEMO_HR_PASSWORD'] = 'HrLoginPass@2026'
+        os.environ['DEMO_ADMIN_PASSWORD'] = 'AdminLoginPass@2026'
+        try:
+            call_command('setup_admin_hr_users')
+
+            # 1. Login via API
+            resp = self.client.post('/api/v1/auth/login/', {
+                'username': 'arjun.mehta',
+                'password': 'HrLoginPass@2026'
+            }, format='json')
+            self.assertEqual(resp.status_code, 200)
+            self.assertIn('access', resp.data)
+            self.assertEqual(resp.data['user']['system_role'], 'HR_MANAGER')
+            self.assertEqual(resp.data['user']['role'], 'Engineering Director')
+            token = resp.data['access']
+
+            # 2. Access authorized HR endpoints
+            self.client.credentials(HTTP_AUTHORIZATION=f'Bearer {token}')
+            hr_dash = self.client.get('/api/v1/hr/dashboard/')
+            self.assertEqual(hr_dash.status_code, 200)
+
+            hr_emps = self.client.get('/api/v1/hr/employees/')
+            self.assertEqual(hr_emps.status_code, 200)
+
+            hr_invites = self.client.get('/api/v1/invitations/')
+            self.assertEqual(hr_invites.status_code, 200)
+
+            # 3. Access forbidden Admin portal endpoint -> returns 403 Forbidden
+            admin_dash = self.client.get('/api/v1/admin/dashboard/')
+            self.assertEqual(admin_dash.status_code, 403)
+        finally:
+            self.client.credentials()
+            os.environ.pop('ENABLE_DEMO_BOOTSTRAP', None)
+            os.environ.pop('DEMO_HR_PASSWORD', None)
+            os.environ.pop('DEMO_ADMIN_PASSWORD', None)
+
+    def test_admin_login_and_role_permissions(self):
+        import os
+        from django.core.management import call_command
+
+        os.environ['ENABLE_DEMO_BOOTSTRAP'] = 'true'
+        os.environ['DEMO_HR_PASSWORD'] = 'HrLoginPass@2026'
+        os.environ['DEMO_ADMIN_PASSWORD'] = 'AdminFullPass@2026'
+        try:
+            call_command('setup_admin_hr_users')
+
+            # 1. Login via API
+            resp = self.client.post('/api/v1/auth/login/', {
+                'username': 'priya.sharma',
+                'password': 'AdminFullPass@2026'
+            }, format='json')
+            self.assertEqual(resp.status_code, 200)
+            self.assertIn('access', resp.data)
+            self.assertEqual(resp.data['user']['system_role'], 'ADMIN')
+            token = resp.data['access']
+
+            # 2. Access authorized Admin endpoints
+            self.client.credentials(HTTP_AUTHORIZATION=f'Bearer {token}')
+            admin_dash = self.client.get('/api/v1/admin/dashboard/')
+            self.assertEqual(admin_dash.status_code, 200)
+
+            # 3. Access HR endpoints (Admin has full supervisor rights)
+            hr_dash = self.client.get('/api/v1/hr/dashboard/')
+            self.assertEqual(hr_dash.status_code, 200)
+        finally:
+            self.client.credentials()
+            os.environ.pop('ENABLE_DEMO_BOOTSTRAP', None)
+            os.environ.pop('DEMO_HR_PASSWORD', None)
+            os.environ.pop('DEMO_ADMIN_PASSWORD', None)
+
+    def test_setup_admin_hr_users_production_guard_disabled(self):
+        import os
+        from django.core.management import call_command
+        from io import StringIO
+
+        out = StringIO()
+        os.environ['RENDER'] = 'true'
+        try:
+            call_command('setup_admin_hr_users', stdout=out)
+            self.assertIn('bootstrap is disabled in production', out.getvalue())
+        finally:
+            os.environ.pop('RENDER', None)
+
 
 
 

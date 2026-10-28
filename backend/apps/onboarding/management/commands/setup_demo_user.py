@@ -29,12 +29,31 @@ def _is_falsy(val):
     return clean in ('false', '0', 'no', 'off', 'disable', 'disabled')
 
 
+def _resolve_env_password(key_aliases):
+    """
+    Safely resolves a password from environment variable aliases.
+    Strips accidental whitespace, wrapping quotes, and pasted KEY=VALUE prefixes.
+    NEVER logs or exposes the password.
+    """
+    for k, v in os.environ.items():
+        norm_k = k.strip().upper()
+        if norm_k in key_aliases:
+            val = _normalize_str(v)
+            for prefix in [f"{alias}=" for alias in key_aliases] + ['PASSWORD=']:
+                if val.upper().startswith(prefix.upper()):
+                    val = _normalize_str(val[len(prefix):])
+                    break
+            if val:
+                return val, k.strip()
+    return None, None
+
+
 def _resolve_bootstrap_flag():
     """
     Robustly resolves whether demo account bootstrap is authorized.
     Scans environment variable keys case-insensitively, handles trailing spaces,
     surrounding quotes, embedded KEY=VALUE formats, and aliases.
-    Also detects intent if DEMO_USER_PASSWORD was explicitly provided (unless bootstrap is explicitly false).
+    Also detects intent if DEMO_USER_PASSWORD, DEMO_HR_PASSWORD, or DEMO_ADMIN_PASSWORD was provided.
     Returns (authorized: bool, source_key: str, normalized_value: str).
     """
     target_keys = {
@@ -56,13 +75,15 @@ def _resolve_bootstrap_flag():
             elif _is_falsy(v):
                 raw_falsy_key = k.strip()
 
-    # 2. Check for DEMO_USER_PASSWORD in environment.
-    # If the operator configured DEMO_USER_PASSWORD in Render, that provides explicit intent,
-    # unless an authorization flag was explicitly set to false/0.
+    # 2. Check for DEMO_USER_PASSWORD, DEMO_HR_PASSWORD, or DEMO_ADMIN_PASSWORD in environment.
     has_pw, pw_source = False, None
     for k, v in os.environ.items():
         norm_k = k.strip().upper()
-        if norm_k in ('DEMO_USER_PASSWORD', 'DEMO_PASSWORD', 'DEMO_USER_PASS', 'BOOTSTRAP_PASSWORD', 'DEMO_ACCOUNT_PASSWORD'):
+        if norm_k in (
+            'DEMO_USER_PASSWORD', 'DEMO_PASSWORD', 'DEMO_USER_PASS', 'BOOTSTRAP_PASSWORD', 'DEMO_ACCOUNT_PASSWORD',
+            'DEMO_HR_PASSWORD', 'DEMO_HR_USER_PASSWORD', 'HR_DEMO_PASSWORD',
+            'DEMO_ADMIN_PASSWORD', 'DEMO_ADMIN_USER_PASSWORD', 'ADMIN_DEMO_PASSWORD'
+        ):
             if bool(_normalize_str(v)):
                 has_pw = True
                 pw_source = k.strip()
@@ -77,44 +98,59 @@ def _resolve_bootstrap_flag():
     return False, None, 'not_set'
 
 
-def _resolve_bootstrap_password(options):
+def _resolve_account_passwords(options, target_username):
     """
-    Resolves demo account password from CLI options or environment variables.
-    Handles key aliases, case-insensitivity, trailing whitespace, wrapping quotes,
-    and accidental KEY=VALUE pasted inputs.
-    NEVER logs or exposes the password value.
+    Resolves passwords for employee, HR, and admin accounts from CLI or environment.
     """
-    if options.get('password'):
-        return options.get('password').strip(), '--password CLI'
+    # Employee password
+    emp_cli = options.get('password') if target_username in ('rahul.kumar', 'all') else None
+    emp_pw = emp_cli
+    emp_src = '--password CLI' if emp_pw else None
+    if not emp_pw:
+        emp_pw, emp_src = _resolve_env_password({
+            'DEMO_USER_PASSWORD',
+            'DEMO_EMPLOYEE_PASSWORD',
+            'DEMO_PASSWORD',
+            'DEMO_USER_PASS',
+            'BOOTSTRAP_PASSWORD',
+        })
 
-    target_pw_keys = {
-        'DEMO_USER_PASSWORD',
-        'DEMO_PASSWORD',
-        'DEMO_USER_PASS',
-        'BOOTSTRAP_PASSWORD',
-        'DEMO_ACCOUNT_PASSWORD',
+    # HR Manager password
+    hr_cli = options.get('hr_password') or (options.get('password') if target_username == 'arjun.mehta' else None)
+    hr_pw = hr_cli
+    hr_src = '--hr-password CLI' if hr_pw else None
+    if not hr_pw:
+        hr_pw, hr_src = _resolve_env_password({
+            'DEMO_HR_PASSWORD',
+            'DEMO_HR_USER_PASSWORD',
+            'HR_DEMO_PASSWORD',
+            'HR_PASSWORD',
+        })
+
+    # Admin password
+    admin_cli = options.get('admin_password') or (options.get('password') if target_username == 'priya.sharma' else None)
+    admin_pw = admin_cli
+    admin_src = '--admin-password CLI' if admin_pw else None
+    if not admin_pw:
+        admin_pw, admin_src = _resolve_env_password({
+            'DEMO_ADMIN_PASSWORD',
+            'DEMO_ADMIN_USER_PASSWORD',
+            'ADMIN_DEMO_PASSWORD',
+            'ADMIN_PASSWORD',
+        })
+
+    return {
+        'rahul.kumar': (emp_pw, emp_src),
+        'arjun.mehta': (hr_pw, hr_src),
+        'priya.sharma': (admin_pw, admin_src),
     }
-
-    for k, v in os.environ.items():
-        norm_k = k.strip().upper()
-        if norm_k in target_pw_keys or 'DEMO_PASSWORD' in norm_k or 'DEMO_USER_PASSWORD' in norm_k:
-            val = _normalize_str(v)
-            # If user accidentally pasted KEY=VALUE into Render's Value box
-            for prefix in ('DEMO_USER_PASSWORD=', 'DEMO_PASSWORD=', 'PASSWORD=', f"{k.strip()}="):
-                if val.upper().startswith(prefix.upper()):
-                    val = _normalize_str(val[len(prefix):])
-                    break
-            if val:
-                return val, k.strip()
-
-    return None, None
 
 
 class Command(BaseCommand):
     help = (
-        'Securely creates or repairs demonstration account(s) and ensures '
-        'proper linkage to Employee identity profiles. In production, this command '
-        'is protected by the ENABLE_DEMO_BOOTSTRAP environment variable.'
+        'Securely creates or repairs demonstration account(s) (Employee: rahul.kumar, '
+        'HR Manager: arjun.mehta, Admin: priya.sharma) and ensures proper linkage to '
+        'Employee identity profiles and RBAC system roles.'
     )
 
     def add_arguments(self, parser):
@@ -122,13 +158,25 @@ class Command(BaseCommand):
             '--username',
             type=str,
             default=None,
-            help='Specific demo account username to create or repair (default: rahul.kumar).'
+            help='Specific demo account username (rahul.kumar, arjun.mehta, priya.sharma, all). Default: rahul.kumar.'
         )
         parser.add_argument(
             '--password',
             type=str,
             default=None,
             help='Password for the demo user account (overrides DEMO_USER_PASSWORD env var).'
+        )
+        parser.add_argument(
+            '--hr-password',
+            type=str,
+            default=None,
+            help='Password for the HR Manager demo account (overrides DEMO_HR_PASSWORD env var).'
+        )
+        parser.add_argument(
+            '--admin-password',
+            type=str,
+            default=None,
+            help='Password for the Admin demo account (overrides DEMO_ADMIN_PASSWORD env var).'
         )
         parser.add_argument(
             '--reset-password',
@@ -140,18 +188,23 @@ class Command(BaseCommand):
         is_production = bool(os.getenv('RENDER') or os.getenv('PRODUCTION', '').lower() == 'true')
         bootstrap_enabled, flag_source, flag_norm_val = _resolve_bootstrap_flag()
 
-        # If --password was explicitly passed on CLI, that also enables bootstrap
-        if bool(options.get('password')):
+        target_username = (
+            options.get('username') or
+            os.getenv('DEMO_USER_USERNAME', 'rahul.kumar')
+        ).strip().lower()
+
+        # If CLI passwords were passed, that also authorizes bootstrap
+        if bool(options.get('password') or options.get('hr_password') or options.get('admin_password')):
             bootstrap_enabled = True
-            flag_source = '--password CLI'
+            flag_source = 'CLI option'
             flag_norm_val = 'true_by_cli'
 
-        raw_password, password_source = _resolve_bootstrap_password(options)
+        pw_map = _resolve_account_passwords(options, target_username)
 
         # Collect relevant diagnostic keys (NEVER log secrets, tokens, or values)
         relevant_keys = sorted([
             k.strip() for k in os.environ.keys()
-            if any(term in k.strip().upper() for term in ('BOOTSTRAP', 'DEMO', 'RENDER', 'PRODUCTION'))
+            if any(term in k.strip().upper() for term in ('BOOTSTRAP', 'DEMO', 'HR', 'ADMIN', 'RENDER', 'PRODUCTION'))
             and not any(secret in k.strip().upper() for secret in ('SECRET_KEY', 'DATABASE_URL', 'AUTH_TOKEN', 'JWT'))
         ])
 
@@ -162,7 +215,9 @@ class Command(BaseCommand):
         self.stdout.write(f"  * bootstrap_flag_present: {bool(flag_source)} (source: {flag_source or 'None'})")
         self.stdout.write(f"  * normalized_bootstrap_value: {flag_norm_val}")
         self.stdout.write(f"  * bootstrap_authorized: {bootstrap_enabled}")
-        self.stdout.write(f"  * password_present: {bool(raw_password)} (source: {password_source or 'None'})")
+        self.stdout.write(f"  * employee_password_present: {bool(pw_map['rahul.kumar'][0])} (source: {pw_map['rahul.kumar'][1] or 'None'})")
+        self.stdout.write(f"  * hr_password_present: {bool(pw_map['arjun.mehta'][0])} (source: {pw_map['arjun.mehta'][1] or 'None'})")
+        self.stdout.write(f"  * admin_password_present: {bool(pw_map['priya.sharma'][0])} (source: {pw_map['priya.sharma'][1] or 'None'})")
         self.stdout.write(f"  * relevant_environment_keys: {relevant_keys}")
         self.stdout.write("================================================================================")
 
@@ -173,19 +228,6 @@ class Command(BaseCommand):
                 "To enable one-time creation/repair, set ENABLE_DEMO_BOOTSTRAP=true in Render Environment."
             ))
             return
-
-        # If bootstrap is enabled, password MUST be present
-        if not raw_password:
-            self.stdout.write(self.style.ERROR(
-                "[setup_demo_user:FAILED] Bootstrap is enabled, but no password was detected. "
-                "Please configure DEMO_USER_PASSWORD in Render Environment Variables."
-            ))
-            sys.exit(1)
-
-        target_username = (
-            options.get('username') or
-            os.getenv('DEMO_USER_USERNAME', 'rahul.kumar')
-        ).strip().lower()
 
         # Standard definition catalogue for demo accounts
         demo_catalog = {
@@ -209,7 +251,13 @@ class Command(BaseCommand):
                 "hr_name": "Priya Sharma",
                 "hr_role": "People & Culture Lead",
                 "hr_email": "priya.sharma@novatech.io",
-                "avatar": "https://images.unsplash.com/photo-1507003211169-0a1dd7228f2d?auto=format&fit=crop&q=80&w=200"
+                "avatar": "https://images.unsplash.com/photo-1507003211169-0a1dd7228f2d?auto=format&fit=crop&q=80&w=200",
+                "phone": "+91 98765 43210",
+                "date_of_birth": "1998-07-14",
+                "blood_group": "O+",
+                "emergency_contact_name": "Sunita Kumar",
+                "emergency_contact_relation": "Mother",
+                "emergency_contact_phone": "+91 98765 11223",
             },
             "arjun.mehta": {
                 "username": "arjun.mehta",
@@ -231,7 +279,13 @@ class Command(BaseCommand):
                 "hr_name": "Priya Sharma",
                 "hr_role": "People & Culture Lead",
                 "hr_email": "priya.sharma@novatech.io",
-                "avatar": "https://images.unsplash.com/photo-1534528741775-53994a69daeb?auto=format&fit=crop&q=80&w=200"
+                "avatar": "https://images.unsplash.com/photo-1534528741775-53994a69daeb?auto=format&fit=crop&q=80&w=200",
+                "phone": "+91 98111 22334",
+                "date_of_birth": "1990-05-20",
+                "blood_group": "A+",
+                "emergency_contact_name": "Emergency Contact",
+                "emergency_contact_relation": "Partner",
+                "emergency_contact_phone": "+91 98765 00000",
             },
             "priya.sharma": {
                 "username": "priya.sharma",
@@ -253,7 +307,13 @@ class Command(BaseCommand):
                 "hr_name": "Priya Sharma",
                 "hr_role": "People & Culture Lead",
                 "hr_email": "priya.sharma@novatech.io",
-                "avatar": "https://images.unsplash.com/photo-1494790108377-be9c29b29330?auto=format&fit=crop&q=80&w=200"
+                "avatar": "https://images.unsplash.com/photo-1494790108377-be9c29b29330?auto=format&fit=crop&q=80&w=200",
+                "phone": "+91 98222 33445",
+                "date_of_birth": "1992-11-12",
+                "blood_group": "B+",
+                "emergency_contact_name": "Emergency Support",
+                "emergency_contact_relation": "Partner",
+                "emergency_contact_phone": "+91 98765 00000",
             }
         }
 
@@ -269,43 +329,75 @@ class Command(BaseCommand):
 
         self.stdout.write(self.style.NOTICE(f"Initializing demonstration account setup for: {[a['username'] for a in accounts_to_process]}..."))
 
+        processed_count = 0
+        preserved_count = 0
+
         try:
             for cfg in accounts_to_process:
+                uname = cfg["username"]
+                pw, pw_src = pw_map[uname]
+
                 # 1. Resolve or create User record
                 user = (
-                    User.objects.filter(username__iexact=cfg["username"]).first() or
+                    User.objects.filter(username__iexact=uname).first() or
                     User.objects.filter(email__iexact=cfg["email"]).first()
                 )
 
                 if not user:
+                    if not pw:
+                        if target_username == uname:
+                            self.stdout.write(self.style.ERROR(
+                                f"[setup_demo_user:FAILED] Bootstrap is enabled, but no password was detected for '{uname}'. "
+                                f"Please configure DEMO_{'HR' if cfg['system_role'] == Employee.ROLE_HR_MANAGER else ('ADMIN' if cfg['system_role'] == Employee.ROLE_ADMIN else 'USER')}_PASSWORD in Render Environment."
+                            ))
+                            sys.exit(1)
+                        else:
+                            self.stdout.write(self.style.NOTICE(
+                                f"  [-] Skipped '{uname}': User does not exist and no password environment variable was provided."
+                            ))
+                            continue
+
                     user = User(
-                        username=cfg["username"],
+                        username=uname,
                         email=cfg["email"],
                         first_name=cfg["first_name"],
                         last_name=cfg["last_name"]
                     )
-                    user.set_password(raw_password)
+                    user.set_password(pw)
                     user.is_active = True
                     if cfg["system_role"] == Employee.ROLE_ADMIN:
                         user.is_staff = True
                         user.is_superuser = True
                     user.save()
                     self.stdout.write(self.style.SUCCESS(f"  [+] Created User '{user.username}'."))
+                    processed_count += 1
                 else:
-                    # In bootstrap mode, set/repair credentials with the provided password
-                    user.set_password(raw_password)
-                    user.email = cfg["email"]
-                    user.first_name = cfg["first_name"]
-                    user.last_name = cfg["last_name"]
-                    user.is_active = True
-                    if cfg["system_role"] == Employee.ROLE_ADMIN:
-                        user.is_staff = True
-                    user.save()
-                    self.stdout.write(self.style.SUCCESS(f"  [*] Repaired/set credentials for User '{user.username}'."))
+                    if pw:
+                        # In bootstrap mode, set/repair credentials with the provided password
+                        user.set_password(pw)
+                        user.email = cfg["email"]
+                        user.first_name = cfg["first_name"]
+                        user.last_name = cfg["last_name"]
+                        user.is_active = True
+                        if cfg["system_role"] == Employee.ROLE_ADMIN:
+                            user.is_staff = True
+                            user.is_superuser = True
+                        user.save()
+                        self.stdout.write(self.style.SUCCESS(f"  [*] Repaired/set credentials for User '{user.username}'."))
+                        processed_count += 1
+                    else:
+                        # Existing user without new password provided - preserve existing credentials!
+                        user.is_active = True
+                        if cfg["system_role"] == Employee.ROLE_ADMIN:
+                            user.is_staff = True
+                            user.is_superuser = True
+                        user.save(update_fields=['is_active', 'is_staff', 'is_superuser'])
+                        self.stdout.write(self.style.NOTICE(f"  [*] Preserved existing credentials for User '{user.username}'."))
+                        preserved_count += 1
 
-                # Verify password set successfully
-                if not user.check_password(raw_password):
-                    raise CommandError(f"Password verification check failed for '{user.username}'.")
+                # Verify password set successfully if a password was passed
+                if pw and not user.check_password(pw):
+                    raise CommandError(f"Password verification check failed for User '{user.username}'.")
 
                 # 2. Resolve or create Employee profile
                 emp = (
@@ -343,7 +435,9 @@ class Command(BaseCommand):
                     emp.user = user
                     emp.system_role = cfg["system_role"]
                     emp.email = cfg["email"]
-                    emp.save(update_fields=['user', 'system_role', 'email'])
+                    emp.role = cfg["role"]
+                    emp.designation = cfg["designation"]
+                    emp.save(update_fields=['user', 'system_role', 'email', 'role', 'designation'])
                     self.stdout.write(self.style.SUCCESS(
                         f"  [OK] Linked User '{user.username}' to Employee '{emp.name}' ({emp.employee_id}) with Role: {emp.system_role}"
                     ))
@@ -352,27 +446,33 @@ class Command(BaseCommand):
                 EmployeeProfile.objects.get_or_create(
                     employee=emp,
                     defaults={
-                        "phone": "+91 98765 43210",
-                        "date_of_birth": "1998-07-14",
-                        "blood_group": "O+",
+                        "phone": cfg["phone"],
+                        "date_of_birth": cfg["date_of_birth"],
+                        "blood_group": cfg["blood_group"],
                         "address": "Flat 402, Silicon Heights, Sector 62",
                         "city": "Chandigarh",
                         "state": "Punjab",
                         "pincode": "160062",
-                        "emergency_contact_name": "Sunita Kumar",
-                        "emergency_contact_relation": "Mother",
-                        "emergency_contact_phone": "+91 98765 11223",
+                        "emergency_contact_name": cfg["emergency_contact_name"],
+                        "emergency_contact_relation": cfg["emergency_contact_relation"],
+                        "emergency_contact_phone": cfg["emergency_contact_phone"],
                         "is_completed": True
                     }
                 )
 
-                # 4. Ensure milestones exist for onboarding dashboard
-                try:
-                    ensure_default_stages()
-                except Exception:
-                    pass
+            # 4. Ensure milestones exist for onboarding dashboard
+            try:
+                ensure_default_stages()
+            except Exception:
+                pass
 
-            self.stdout.write(self.style.SUCCESS("[setup_demo_user:SUCCESS] Demonstration account verification and setup completed successfully."))
+            if processed_count == 0 and preserved_count == 0:
+                self.stdout.write(self.style.ERROR("[setup_demo_user:FAILED] No accounts were configured or verified."))
+                sys.exit(1)
+
+            self.stdout.write(self.style.SUCCESS(
+                f"[setup_demo_user:SUCCESS] Demonstration account verification completed successfully ({processed_count} configured/repaired, {preserved_count} preserved)."
+            ))
 
         except Exception as err:
             self.stdout.write(self.style.ERROR(f"[setup_demo_user:FAILED] Error during account bootstrap: {err}"))

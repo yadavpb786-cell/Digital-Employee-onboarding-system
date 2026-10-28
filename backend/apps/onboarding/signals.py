@@ -18,6 +18,11 @@ def handle_demo_bootstrap_post_migrate(sender, **kwargs):
 
     sys.stdout.write(f"[post_migrate] Demo bootstrap authorized via {flag_source}. Invoking setup_demo_user...\n")
     try:
-        call_command('setup_demo_user')
+        call_command('setup_demo_user', username='all')
     except (Exception, SystemExit) as exc:
         sys.stderr.write(f"[post_migrate] Error running setup_demo_user: {exc}\n")
+
+    try:
+        call_command('setup_admin_hr_users')
+    except (Exception, SystemExit) as exc:
+        sys.stderr.write(f"[post_migrate] Error running setup_admin_hr_users: {exc}\n")
