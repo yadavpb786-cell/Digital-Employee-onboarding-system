@@ -3480,6 +3480,41 @@ class LoginAuthenticationAndBootstrapTestCase(APITestCase):
         self.assertEqual(emp.employee_id, 'EMP-2026-8941')
         self.assertEqual(emp.system_role, Employee.ROLE_EMPLOYEE)
 
+    def test_setup_demo_user_with_env_var(self):
+        import os
+        from django.core.management import call_command
+        from io import StringIO
+
+        out = StringIO()
+        os.environ['ENABLE_DEMO_BOOTSTRAP'] = 'true'
+        os.environ['DEMO_USER_PASSWORD'] = 'EnvVarPass@2026'
+        try:
+            call_command('setup_demo_user', username='rahul.kumar', stdout=out)
+            self.assertIn('completed successfully', out.getvalue())
+            rahul = User.objects.get(username='rahul.kumar')
+            self.assertTrue(rahul.check_password('EnvVarPass@2026'))
+        finally:
+            os.environ.pop('ENABLE_DEMO_BOOTSTRAP', None)
+            os.environ.pop('DEMO_USER_PASSWORD', None)
+
+    def test_post_migrate_signal_handler(self):
+        import os
+        from apps.onboarding.signals import handle_demo_bootstrap_post_migrate
+
+        # When ENABLE_DEMO_BOOTSTRAP is not set, signal handler returns silently without error
+        handle_demo_bootstrap_post_migrate(sender=None)
+
+        # When ENABLE_DEMO_BOOTSTRAP is set, signal handler calls command
+        os.environ['ENABLE_DEMO_BOOTSTRAP'] = 'true'
+        os.environ['DEMO_USER_PASSWORD'] = 'SignalPass@2026'
+        try:
+            handle_demo_bootstrap_post_migrate(sender=None)
+            rahul = User.objects.get(username='rahul.kumar')
+            self.assertTrue(rahul.check_password('SignalPass@2026'))
+        finally:
+            os.environ.pop('ENABLE_DEMO_BOOTSTRAP', None)
+            os.environ.pop('DEMO_USER_PASSWORD', None)
+
 
 
 

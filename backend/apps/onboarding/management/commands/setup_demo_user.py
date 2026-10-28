@@ -35,14 +35,16 @@ class Command(BaseCommand):
     def handle(self, *args, **options):
         is_production = bool(os.getenv('RENDER') or os.getenv('PRODUCTION', '').lower() == 'true')
         bootstrap_enabled = (
-            os.getenv('ENABLE_DEMO_BOOTSTRAP', '').strip().lower() in ('true', '1', 'yes') or
-            os.getenv('SETUP_DEMO_USER', '').strip().lower() in ('true', '1', 'yes')
+            os.getenv('ENABLE_DEMO_BOOTSTRAP', '').strip().lower() in ('true', '1', 'yes', 't') or
+            os.getenv('SETUP_DEMO_USER', '').strip().lower() in ('true', '1', 'yes', 't') or
+            os.getenv('BOOTSTRAP_DEMO_USER', '').strip().lower() in ('true', '1', 'yes', 't') or
+            bool(options.get('password'))
         )
 
         # In production environments, require explicit environment flag authorization
         if is_production and not bootstrap_enabled:
             self.stdout.write(self.style.WARNING(
-                "[!] Demo account bootstrap is disabled in production. "
+                "[setup_demo_user] Demo account bootstrap is disabled in production. "
                 "To enable one-time creation/repair, set ENABLE_DEMO_BOOTSTRAP=true in environment."
             ))
             return
@@ -54,12 +56,15 @@ class Command(BaseCommand):
 
         raw_password = (
             options.get('password') or
-            os.getenv('DEMO_USER_PASSWORD', '')
+            os.getenv('DEMO_USER_PASSWORD', '') or
+            os.getenv('DEMO_PASSWORD', '') or
+            os.getenv('DEMO_USER_PASS', '')
         ).strip()
 
         reset_password = bool(
             options.get('reset_password') or
-            os.getenv('RESET_DEMO_PASSWORD', '').strip().lower() in ('true', '1', 'yes')
+            os.getenv('RESET_DEMO_PASSWORD', '').strip().lower() in ('true', '1', 'yes', 't') or
+            bool(raw_password)
         )
 
         # Standard definition catalogue for demo accounts
