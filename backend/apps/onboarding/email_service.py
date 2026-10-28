@@ -4,7 +4,9 @@ Handles candidate onboarding invitation delivery and email notifications
 via configurable SMTP (e.g. Gmail, SendGrid, Amazon SES) or dev backends.
 """
 
+import json
 import logging
+import os
 import socket
 import smtplib
 from smtplib import SMTPException
@@ -16,27 +18,149 @@ logger = logging.getLogger(__name__)
 
 
 class EmailDeliveryError(Exception):
-    """Raised when email delivery fails via SMTP or chosen email backend."""
+    """Raised when email delivery fails via HTTPS API, SMTP, or chosen email backend."""
     pass
 
 
-def send_invitation_email(invitation, raw_token, invitation_url):
+def send_resend_https_email(to_email, subject, html_content, text_content=None, from_email=None):
     """
-    Sends a cryptographically linked onboarding invitation email to the candidate's personal email address.
+    Delivers an email using the Resend HTTPS API (https://api.resend.com/emails).
+    Uses outbound HTTPS (port 443), which works reliably on Render Free web services where outbound SMTP is blocked.
 
     Args:
-        invitation (CandidateInvitation): The invitation database record.
-        raw_token (str): The unhashed cryptographic token (urlsafe).
-        invitation_url (str): The full URL to the registration page.
+        to_email (str): Candidate or employee recipient email address.
+        subject (str): Email subject line.
+        html_content (str): Full branded HTML body.
+        text_content (str, optional): Plaintext fallback message.
+        from_email (str, optional): Verified sender address.
+
+    Returns:
+        tuple: (True, message_id) on confirmed provider acceptance.
 
     Raises:
-        EmailDeliveryError: If SMTP credentials are missing or email delivery fails.
+        EmailDeliveryError: If RESEND_API_KEY is missing, invalid, or Resend rejects delivery.
     """
-    recipient_email = (invitation.email or '').strip()
-    if not recipient_email:
-        raise EmailDeliveryError("Recipient email address is missing.")
+    resend_api_key = (getattr(settings, 'RESEND_API_KEY', '') or os.getenv('RESEND_API_KEY', '')).strip()
+    if not resend_api_key:
+        error_msg = (
+            "Resend HTTPS API key is not configured. Please add RESEND_API_KEY to your "
+            "Render Dashboard Environment settings to send live invitation emails."
+        )
+        logger.error(f"[resend_service:unconfigured] {error_msg}")
+        raise EmailDeliveryError(error_msg)
 
-    # Honest failure check: if SMTP backend is configured but credentials are unset
+    # Determine sender address
+    sender = from_email or getattr(settings, 'RESEND_FROM_EMAIL', '') or os.getenv('RESEND_FROM_EMAIL', '')
+    if not sender:
+        default_from = getattr(settings, 'DEFAULT_FROM_EMAIL', '') or os.getenv('DEFAULT_FROM_EMAIL', '')
+        if default_from and not default_from.strip().lower().endswith('@novatech.io>'):
+            sender = default_from.strip()
+        else:
+            # Resend default sandbox sender for unverified test domains
+            sender = "NOVA Tech Onboarding <onboarding@resend.dev>"
+
+    payload = {
+        "from": sender,
+        "to": [to_email] if isinstance(to_email, str) else list(to_email),
+        "subject": subject,
+        "html": html_content,
+    }
+    if text_content:
+        payload["text"] = text_content
+
+    # Safe diagnostics logging (never logs secret API keys, passwords, or invitation tokens)
+    logger.info(
+        f"[resend_service:diagnostics] Dispatching via Resend HTTPS API (port 443) | "
+        f"Sender: {sender} | Recipient: {to_email} | "
+        f"API Key configured: True (length: {len(resend_api_key)})"
+    )
+
+    headers = {
+        "Authorization": f"Bearer {resend_api_key}",
+        "Content-Type": "application/json",
+        "User-Agent": "NOVA-Tech-Digital-Onboarding/1.0"
+    }
+
+    status_code = None
+    body = {}
+
+    try:
+        import requests
+        resp = requests.post(
+            "https://api.resend.com/emails",
+            headers=headers,
+            json=payload,
+            timeout=15
+        )
+        status_code = resp.status_code
+        try:
+            body = resp.json()
+        except Exception:
+            body = {"raw": resp.text}
+
+    except ImportError:
+        import urllib.request
+        import urllib.error
+        req = urllib.request.Request(
+            "https://api.resend.com/emails",
+            data=json.dumps(payload).encode("utf-8"),
+            headers=headers,
+            method="POST"
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=15) as res:
+                status_code = res.status
+                body = json.loads(res.read().decode("utf-8"))
+        except urllib.error.HTTPError as exc:
+            status_code = exc.code
+            try:
+                body = json.loads(exc.read().decode("utf-8"))
+            except Exception:
+                body = {"raw": str(exc)}
+        except urllib.error.URLError as exc:
+            err_msg = f"Failed to connect to Resend HTTPS API: {exc.reason}"
+            logger.error(f"[resend_service:network_error] {err_msg}")
+            raise EmailDeliveryError(err_msg) from exc
+    except requests.exceptions.Timeout as exc:
+        err_msg = "Resend HTTPS API request timed out after 15 seconds."
+        logger.error(f"[resend_service:timeout] {err_msg}")
+        raise EmailDeliveryError(err_msg) from exc
+    except requests.exceptions.RequestException as exc:
+        err_msg = f"Resend HTTPS API request failed: {str(exc)}"
+        logger.error(f"[resend_service:request_error] {err_msg}")
+        raise EmailDeliveryError(err_msg) from exc
+
+    if status_code in (200, 201):
+        message_id = body.get("id") or "accepted"
+        logger.info(
+            f"[resend_service:success] Email accepted by Resend HTTPS API for {to_email}. "
+            f"Message ID: {message_id}"
+        )
+        return True, message_id
+
+    provider_msg = body.get("message") or body.get("error") or body.get("raw") or f"HTTP {status_code}"
+    if status_code == 401:
+        err_msg = (
+            "Resend API authentication failed (HTTP 401). "
+            "Please verify that your RESEND_API_KEY environment variable on Render is correct and active."
+        )
+    elif status_code == 403:
+        err_msg = (
+            f"Resend API permission error (HTTP 403): {provider_msg}. "
+            f"Note: When sending from 'onboarding@resend.dev' on Resend's free tier, Resend only permits "
+            f"sending to your own registered Resend account email until you add and verify a custom domain in Resend Dashboard."
+        )
+    elif status_code == 422:
+        err_msg = f"Resend API validation error (HTTP 422): {provider_msg}"
+    else:
+        err_msg = f"Resend HTTPS API delivery rejected (HTTP {status_code}): {provider_msg}"
+
+    logger.error(f"[resend_service:error] {err_msg}")
+    raise EmailDeliveryError(err_msg)
+
+
+def _send_django_smtp_or_locmem_email(subject, text_content, html_content, recipient_email, invitation=None):
+    """Fallback delivery via Django's configured EMAIL_BACKEND (SMTP or locmem)."""
     backend_name = getattr(settings, 'EMAIL_BACKEND', '') or ''
     host_user = getattr(settings, 'EMAIL_HOST_USER', '') or ''
     host_password = getattr(settings, 'EMAIL_HOST_PASSWORD', '') or ''
@@ -62,11 +186,79 @@ def send_invitation_email(invitation, raw_token, invitation_url):
             missing.append("EMAIL_HOST_PASSWORD")
         error_msg = (
             f"SMTP email delivery is not configured on Render. Missing environment variable(s): {', '.join(missing)}. "
-            f"Please configure EMAIL_HOST_USER (e.g. your Gmail address) and EMAIL_HOST_PASSWORD (16-character Google App Password) "
-            f"in Render Dashboard Environment settings to send live invitation emails."
+            f"Render Free web services block outbound SMTP ports (ports 25, 465, 587), causing '[Errno 101] Network is unreachable'. "
+            f"Please configure RESEND_API_KEY in Render Dashboard Environment settings to send live invitation emails via HTTPS."
         )
         logger.error(f"[email_service:unconfigured] {error_msg}")
         raise EmailDeliveryError(error_msg)
+
+    try:
+        msg = EmailMultiAlternatives(
+            subject=subject,
+            body=text_content,
+            from_email=from_email,
+            to=[recipient_email]
+        )
+        msg.attach_alternative(html_content, "text/html")
+        sent_count = msg.send(fail_silently=False)
+
+        if sent_count == 0:
+            raise EmailDeliveryError(f"Email delivery engine reported 0 messages sent to {recipient_email}.")
+
+        name = getattr(invitation, 'full_name', '') if invitation else ''
+        logger.info(f"Successfully delivered email to {recipient_email}{f' for {name}' if name else ''}.")
+        return True
+
+    except smtplib.SMTPAuthenticationError as exc:
+        err_msg = (
+            f"SMTP authentication failed for '{host_user}'. "
+            f"Please verify EMAIL_HOST_USER and EMAIL_HOST_PASSWORD in Render Dashboard. "
+            f"If using Gmail, ensure 2-Step Verification is active and use a 16-character Google App Password."
+        )
+        logger.error(f"[email_service:auth_error] {err_msg} (SMTP code: {getattr(exc, 'smtp_code', 'unknown')})")
+        raise EmailDeliveryError(err_msg) from exc
+    except (smtplib.SMTPConnectError, socket.timeout, TimeoutError) as exc:
+        err_msg = (
+            f"Failed to connect to SMTP server ({email_host}:{email_port}). "
+            f"Note: Render Free web services block outbound SMTP ports (ports 25, 465, 587), causing '[Errno 101] Network is unreachable'. "
+            f"Please configure RESEND_API_KEY to send emails via Resend's HTTPS API."
+        )
+        logger.error(f"[email_service:connect_error] {err_msg}: {exc}")
+        raise EmailDeliveryError(err_msg) from exc
+    except (SMTPException, OSError, ConnectionError) as exc:
+        err_str = str(exc)
+        if '101' in err_str or 'unreachable' in err_str.lower():
+            err_msg = (
+                f"Network unreachable connecting to SMTP server ({email_host}:{email_port}): {err_str}. "
+                f"Render Free blocks outbound SMTP ports 25, 465, and 587. "
+                f"Please configure RESEND_API_KEY in Render Dashboard to send emails via HTTPS."
+            )
+        else:
+            err_msg = f"Failed to deliver email via SMTP to {recipient_email}: {err_str}"
+        logger.error(f"[email_service:smtp_error] {err_msg}", exc_info=True)
+        raise EmailDeliveryError(err_msg) from exc
+    except Exception as exc:
+        err_msg = f"Unexpected failure sending email to {recipient_email}: {str(exc)}"
+        logger.error(f"[email_service:unexpected_error] {err_msg}", exc_info=True)
+        raise EmailDeliveryError(err_msg) from exc
+
+
+def send_invitation_email(invitation, raw_token, invitation_url):
+    """
+    Sends a cryptographically linked onboarding invitation email to the candidate's personal email address.
+    Uses Resend HTTPS API when RESEND_API_KEY is configured, or falls back to SMTP / Django mail backend.
+
+    Args:
+        invitation (CandidateInvitation): The invitation database record.
+        raw_token (str): The unhashed cryptographic token (urlsafe).
+        invitation_url (str): The full URL to the registration page.
+
+    Raises:
+        EmailDeliveryError: If email delivery fails via HTTPS API or SMTP.
+    """
+    recipient_email = (invitation.email or '').strip()
+    if not recipient_email:
+        raise EmailDeliveryError("Recipient email address is missing.")
 
     # Format dates
     expiry_time = invitation.expires_at.astimezone(timezone.get_current_timezone())
@@ -232,64 +424,44 @@ NOVA Tech Platform
 </html>
 """
 
-    from_email = getattr(settings, 'DEFAULT_FROM_EMAIL', None) or 'NOVA Tech Onboarding <onboarding@novatech.io>'
+    resend_api_key = (getattr(settings, 'RESEND_API_KEY', '') or os.getenv('RESEND_API_KEY', '')).strip()
+    backend_name = getattr(settings, 'EMAIL_BACKEND', '') or ''
 
-    try:
-        msg = EmailMultiAlternatives(
+    # 1. Standard Django test environment (locmem backend active and no RESEND_API_KEY)
+    if 'locmem.EmailBackend' in backend_name and not resend_api_key:
+        return _send_django_smtp_or_locmem_email(subject, text_content, html_content, recipient_email, invitation)
+
+    # 2. Prefer Resend HTTPS API (port 443) when RESEND_API_KEY is configured (e.g. Render production)
+    if resend_api_key:
+        success, _ = send_resend_https_email(
+            to_email=recipient_email,
             subject=subject,
-            body=text_content,
-            from_email=from_email,
-            to=[recipient_email]
+            html_content=html_content,
+            text_content=text_content
         )
-        msg.attach_alternative(html_content, "text/html")
-        sent_count = msg.send(fail_silently=False)
+        return success
 
-        if sent_count == 0:
-            raise EmailDeliveryError(f"Email delivery engine reported 0 messages sent to {recipient_email}.")
-
-        logger.info(f"Successfully delivered onboarding invitation email to {recipient_email} for {invitation.full_name}.")
-        return True
-
-    except smtplib.SMTPAuthenticationError as exc:
-        err_msg = (
-            f"SMTP authentication failed for '{host_user}'. "
-            f"Please verify EMAIL_HOST_USER and EMAIL_HOST_PASSWORD in Render Dashboard. "
-            f"If using Gmail, ensure 2-Step Verification is active and use a 16-character Google App Password."
-        )
-        logger.error(f"[email_service:auth_error] {err_msg} (SMTP code: {getattr(exc, 'smtp_code', 'unknown')})")
-        raise EmailDeliveryError(err_msg) from exc
-    except (smtplib.SMTPConnectError, socket.timeout, TimeoutError) as exc:
-        err_msg = (
-            f"Failed to connect to SMTP server ({email_host}:{email_port}). "
-            f"Network connection timed out or port is blocked."
-        )
-        logger.error(f"[email_service:connect_error] {err_msg}: {exc}")
-        raise EmailDeliveryError(err_msg) from exc
-    except (SMTPException, OSError, ConnectionError) as exc:
-        err_msg = f"Failed to deliver invitation email via SMTP to {recipient_email}: {str(exc)}"
-        logger.error(f"[email_service:smtp_error] {err_msg}", exc_info=True)
-        raise EmailDeliveryError(err_msg) from exc
-    except Exception as exc:
-        err_msg = f"Unexpected failure sending invitation email to {recipient_email}: {str(exc)}"
-        logger.error(f"[email_service:unexpected_error] {err_msg}", exc_info=True)
-        raise EmailDeliveryError(err_msg) from exc
+    # 3. Fallback to SMTP or configured Django email backend
+    return _send_django_smtp_or_locmem_email(subject, text_content, html_content, recipient_email, invitation)
 
 
 def send_activation_confirmation_email(employee):
     """
     Optional confirmation email sent after successful account password activation.
+    Supports Resend HTTPS API and standard Django mail backend.
     """
     recipient_email = (employee.email or '').strip()
     if not recipient_email:
         return False
 
+    resend_api_key = (getattr(settings, 'RESEND_API_KEY', '') or os.getenv('RESEND_API_KEY', '')).strip()
     backend_name = getattr(settings, 'EMAIL_BACKEND', '') or ''
     host_user = getattr(settings, 'EMAIL_HOST_USER', '') or ''
     host_password = getattr(settings, 'EMAIL_HOST_PASSWORD', '') or ''
 
-    if 'smtp.EmailBackend' in backend_name and (not host_user or not host_password):
-        # Do not fail activation if confirmation email cannot be sent due to unconfigured SMTP
-        logger.info("[email_service] Skipping optional activation confirmation email: SMTP unconfigured.")
+    # If neither Resend API key nor SMTP/locmem credentials are present, skip quietly
+    if not resend_api_key and 'smtp.EmailBackend' in backend_name and (not host_user or not host_password):
+        logger.info("[email_service] Skipping optional activation confirmation email: Neither RESEND_API_KEY nor SMTP configured.")
         return False
 
     frontend_url = getattr(settings, 'FRONTEND_URL', 'https://digital-employee-onboarding-system.vercel.app').rstrip('/')
@@ -346,8 +518,22 @@ NOVA Tech Platform
 </body>
 </html>
 """
-    from_email = getattr(settings, 'DEFAULT_FROM_EMAIL', None) or 'NOVA Tech Onboarding <onboarding@novatech.io>'
+
+    if resend_api_key:
+        try:
+            send_resend_https_email(
+                to_email=recipient_email,
+                subject=subject,
+                html_content=html_content,
+                text_content=text_content
+            )
+            return True
+        except Exception as exc:
+            logger.warning(f"[email_service] Failed to send activation confirmation email via Resend to {recipient_email}: {exc}")
+            return False
+
     try:
+        from_email = getattr(settings, 'DEFAULT_FROM_EMAIL', None) or 'NOVA Tech Onboarding <onboarding@novatech.io>'
         msg = EmailMultiAlternatives(
             subject=subject,
             body=text_content,
@@ -358,5 +544,5 @@ NOVA Tech Platform
         msg.send(fail_silently=True)
         return True
     except Exception as exc:
-        logger.warning(f"Failed to send activation confirmation email to {recipient_email}: {exc}")
+        logger.warning(f"[email_service] Failed to send activation confirmation email via SMTP to {recipient_email}: {exc}")
         return False

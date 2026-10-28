@@ -39,6 +39,11 @@ if [ -n "${EMAIL_HOST_PASSWORD:-}" ]; then
 else
     echo "  * EMAIL_HOST_PASSWORD (SMTP) is NOT set in shell environment"
 fi
+if [ -n "${RESEND_API_KEY:-}" ]; then
+    echo "  * RESEND_API_KEY (HTTPS API) is present in shell environment (length: ${#RESEND_API_KEY})"
+else
+    echo "  * RESEND_API_KEY (HTTPS API) is NOT set in shell environment"
+fi
 echo "================================================================================"
 
 echo "[build.sh] Executing setup_demo_user for demo accounts..."

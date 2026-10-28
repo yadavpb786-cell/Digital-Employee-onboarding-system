@@ -4038,6 +4038,273 @@ class ProductionInvitationEmailWorkflowTestCase(APITestCase):
         self.assertEqual(cleaned, "abcdefghijklmnop")
 
 
+class ResendHttpsEmailDeliveryWorkflowTestCase(APITestCase):
+    """
+    Validates transactional email delivery via Resend HTTPS API (port 443):
+    1. Successful invitation dispatch with verified Resend API acceptance (mocked HTTP 200).
+    2. Resend API authentication failure (HTTP 401) with transaction rollback and 502 Bad Gateway.
+    3. Resend unverified domain / free tier restriction (HTTP 403) with clear guidance.
+    4. Resend HTTPS API network timeout and connection error handling with transaction rollback.
+    5. Resending invitation dispatches fresh token via Resend API and invalidates previous token.
+    6. Full registration journey after invitation via Resend API, including activation confirmation email.
+    """
+
+    def setUp(self):
+        # Create HR Manager User
+        self.hr_user = User.objects.create_user(
+            username='hr.resend',
+            email='hr.resend@novatech.io',
+            password='TestPassword123!',
+            first_name='Arjun',
+            last_name='Mehta'
+        )
+        self.hr_employee = Employee.objects.create(
+            user=self.hr_user,
+            employee_id='EMP-HR-0002',
+            name='Arjun Mehta',
+            email='hr.resend@novatech.io',
+            role='HR Operations Manager',
+            designation='HR Manager',
+            department='People & Culture',
+            system_role=Employee.ROLE_HR_MANAGER
+        )
+
+    @patch('requests.post')
+    def test_resend_https_api_delivery_success(self, mock_post):
+        """Successful Resend HTTPS API submission returns 201 and persists invitation."""
+        from django.test import override_settings
+        from unittest.mock import MagicMock
+
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.json.return_value = {'id': 'resend_msg_test_abc123'}
+        mock_post.return_value = mock_resp
+
+        self.client.force_authenticate(user=self.hr_user)
+        payload = {
+            'email': 'aditi.sharma@example.com',
+            'full_name': 'Aditi Sharma',
+            'job_title': 'Senior Data Engineer',
+            'department': 'Data & Technology',
+            'joining_date': 'Monday, November 2, 2026',
+            'manager': 'Arjun Mehta'
+        }
+
+        with override_settings(RESEND_API_KEY='re_test_mock_key_12345'):
+            resp = self.client.post('/api/v1/invitations/', payload, format='json')
+
+        self.assertEqual(resp.status_code, 201)
+        self.assertTrue(resp.data.get('email_sent'))
+        self.assertEqual(resp.data.get('email_recipient'), 'aditi.sharma@example.com')
+        raw_token = resp.data['raw_token']
+
+        # Verify requests.post was called with Resend endpoint and payload
+        mock_post.assert_called_once()
+        args, kwargs = mock_post.call_args
+        self.assertEqual(args[0], 'https://api.resend.com/emails')
+        self.assertEqual(kwargs['headers']['Authorization'], 'Bearer re_test_mock_key_12345')
+        self.assertEqual(kwargs['json']['to'], ['aditi.sharma@example.com'])
+        self.assertIn('Welcome to NOVA Tech', kwargs['json']['subject'])
+        self.assertIn(raw_token, kwargs['json']['html'])
+        self.assertIn('/register?token=', kwargs['json']['html'])
+
+        # Verify DB persistence
+        token_hash = hashlib.sha256(raw_token.encode('utf-8')).hexdigest()
+        self.assertTrue(CandidateInvitation.objects.filter(token_hash=token_hash).exists())
+
+    @patch('requests.post')
+    def test_resend_https_api_401_authentication_failure(self, mock_post):
+        """Invalid Resend API key returns 502 Bad Gateway and rolls back transaction."""
+        from django.test import override_settings
+        from unittest.mock import MagicMock
+
+        mock_resp = MagicMock()
+        mock_resp.status_code = 401
+        mock_resp.json.return_value = {'statusCode': 401, 'message': 'API key is invalid'}
+        mock_post.return_value = mock_resp
+
+        self.client.force_authenticate(user=self.hr_user)
+        payload = {
+            'email': 'failed.auth@example.com',
+            'full_name': 'Failed Auth Candidate'
+        }
+
+        with override_settings(RESEND_API_KEY='re_invalid_api_key'):
+            resp = self.client.post('/api/v1/invitations/', payload, format='json')
+
+        self.assertEqual(resp.status_code, 502)
+        self.assertFalse(resp.data.get('email_sent'))
+        self.assertIn('authentication failed', resp.data.get('error', '').lower())
+
+        # Verify atomic transaction rollback: candidate is NOT saved
+        self.assertFalse(CandidateInvitation.objects.filter(email='failed.auth@example.com').exists())
+
+    @patch('requests.post')
+    def test_resend_https_api_403_unverified_domain(self, mock_post):
+        """Resend free tier testing domain limitation (403) returns clear error and rolls back."""
+        from django.test import override_settings
+        from unittest.mock import MagicMock
+
+        mock_resp = MagicMock()
+        mock_resp.status_code = 403
+        mock_resp.json.return_value = {
+            'statusCode': 403,
+            'message': 'You can only send to your own email address while using the testing domain.'
+        }
+        mock_post.return_value = mock_resp
+
+        self.client.force_authenticate(user=self.hr_user)
+        payload = {
+            'email': 'restricted.recipient@example.com',
+            'full_name': 'Restricted Candidate'
+        }
+
+        with override_settings(RESEND_API_KEY='re_test_mock_key'):
+            resp = self.client.post('/api/v1/invitations/', payload, format='json')
+
+        self.assertEqual(resp.status_code, 502)
+        self.assertFalse(resp.data.get('email_sent'))
+        self.assertIn('custom domain', resp.data.get('error', '').lower())
+        self.assertFalse(CandidateInvitation.objects.filter(email='restricted.recipient@example.com').exists())
+
+    @patch('requests.post')
+    def test_resend_https_api_timeout_rolls_back(self, mock_post):
+        """Resend API request timeout returns 502 and rolls back."""
+        import requests
+        from django.test import override_settings
+
+        mock_post.side_effect = requests.exceptions.Timeout("Connection timed out after 15 seconds")
+
+        self.client.force_authenticate(user=self.hr_user)
+        payload = {
+            'email': 'timeout.candidate@example.com',
+            'full_name': 'Timeout Candidate'
+        }
+
+        with override_settings(RESEND_API_KEY='re_test_mock_key'):
+            resp = self.client.post('/api/v1/invitations/', payload, format='json')
+
+        self.assertEqual(resp.status_code, 502)
+        self.assertFalse(resp.data.get('email_sent'))
+        self.assertIn('timed out', resp.data.get('error', '').lower())
+        self.assertFalse(CandidateInvitation.objects.filter(email='timeout.candidate@example.com').exists())
+
+    @patch('requests.post')
+    def test_resend_https_api_network_error_rolls_back(self, mock_post):
+        """Resend API connection failure returns 502 and rolls back."""
+        import requests
+        from django.test import override_settings
+
+        mock_post.side_effect = requests.exceptions.RequestException("DNS resolution failed")
+
+        self.client.force_authenticate(user=self.hr_user)
+        payload = {
+            'email': 'network.fail@example.com',
+            'full_name': 'Network Fail Candidate'
+        }
+
+        with override_settings(RESEND_API_KEY='re_test_mock_key'):
+            resp = self.client.post('/api/v1/invitations/', payload, format='json')
+
+        self.assertEqual(resp.status_code, 502)
+        self.assertFalse(resp.data.get('email_sent'))
+        self.assertFalse(CandidateInvitation.objects.filter(email='network.fail@example.com').exists())
+
+    @patch('requests.post')
+    def test_resend_invitation_via_resend_api(self, mock_post):
+        """Resend invitation endpoint dispatches fresh token via Resend HTTPS API."""
+        from django.test import override_settings
+        from unittest.mock import MagicMock
+
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.json.return_value = {'id': 'resend_msg_1'}
+        mock_post.return_value = mock_resp
+
+        self.client.force_authenticate(user=self.hr_user)
+        with override_settings(RESEND_API_KEY='re_test_mock_key'):
+            create_resp = self.client.post('/api/v1/invitations/', {
+                'email': 'resend.flow@example.com',
+                'full_name': 'Resend Flow Candidate'
+            }, format='json')
+            self.assertEqual(create_resp.status_code, 201)
+            initial_token = create_resp.data['raw_token']
+            inv_id = create_resp.data['id']
+
+            # Reset mock to verify the resend call
+            mock_post.reset_mock()
+            mock_resp.json.return_value = {'id': 'resend_msg_2'}
+
+            resend_resp = self.client.post(f'/api/v1/invitations/{inv_id}/resend/')
+            self.assertEqual(resend_resp.status_code, 200)
+            self.assertTrue(resend_resp.data.get('email_sent'))
+            new_token = resend_resp.data['raw_token']
+            self.assertNotEqual(initial_token, new_token)
+
+            mock_post.assert_called_once()
+            args, kwargs = mock_post.call_args
+            self.assertIn(new_token, kwargs['json']['html'])
+            self.assertNotIn(initial_token, kwargs['json']['html'])
+
+    @patch('requests.post')
+    def test_full_registration_journey_via_resend(self, mock_post):
+        """Full candidate journey: invite via Resend -> preview -> register -> activate -> login."""
+        from django.test import override_settings
+        from unittest.mock import MagicMock
+
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.json.return_value = {'id': 'resend_invite_001'}
+        mock_post.return_value = mock_resp
+
+        self.client.force_authenticate(user=self.hr_user)
+        with override_settings(RESEND_API_KEY='re_test_mock_key'):
+            create_resp = self.client.post('/api/v1/invitations/', {
+                'email': 'deepak.verma@example.com',
+                'full_name': 'Deepak Verma',
+                'job_title': 'Cloud Security Architect',
+                'department': 'Cybersecurity Operations'
+            }, format='json')
+            self.assertEqual(create_resp.status_code, 201)
+            raw_token = create_resp.data['raw_token']
+
+        self.client.logout()
+
+        # Step 1: Preview invitation
+        preview_resp = self.client.get(f'/api/v1/invitations/preview/?token={raw_token}')
+        self.assertEqual(preview_resp.status_code, 200)
+        self.assertEqual(preview_resp.data['full_name'], 'Deepak Verma')
+
+        # Step 2: Accept invitation and set password
+        with override_settings(RESEND_API_KEY='re_test_mock_key'):
+            accept_resp = self.client.post('/api/v1/invitations/accept/', {
+                'token': raw_token,
+                'password': 'SecureDeepakPassword@2026',
+                'confirm_password': 'SecureDeepakPassword@2026'
+            }, format='json')
+            self.assertEqual(accept_resp.status_code, 201)
+            self.assertTrue(accept_resp.data.get('success'))
+            self.assertEqual(accept_resp.data.get('system_role'), 'EMPLOYEE')
+
+        # Verify User and Employee created
+        user = User.objects.get(email='deepak.verma@example.com')
+        self.assertTrue(user.is_active)
+        self.assertTrue(user.check_password('SecureDeepakPassword@2026'))
+
+        emp = Employee.objects.get(user=user)
+        self.assertEqual(emp.system_role, Employee.ROLE_EMPLOYEE)
+        self.assertEqual(emp.role, 'Cloud Security Architect')
+
+        # Verify login succeeds
+        login_resp = self.client.post('/api/v1/auth/login/', {
+            'username': user.username,
+            'password': 'SecureDeepakPassword@2026'
+        }, format='json')
+        self.assertEqual(login_resp.status_code, 200)
+        self.assertEqual(login_resp.data['user']['system_role'], 'EMPLOYEE')
+
+
+
 
 
 

@@ -285,4 +285,10 @@ DEFAULT_FROM_EMAIL = os.getenv('DEFAULT_FROM_EMAIL', '').strip() or (
 )
 EMAIL_TIMEOUT = int(os.getenv('EMAIL_TIMEOUT', '15'))
 
+# Transactional Email Delivery via HTTPS API (Resend)
+# Render Free web services block outbound SMTP ports (25, 465, 587), causing '[Errno 101] Network is unreachable'.
+# RESEND_API_KEY enables email delivery via the Resend HTTPS API over port 443.
+RESEND_API_KEY = os.getenv('RESEND_API_KEY', '').strip()
+RESEND_FROM_EMAIL = os.getenv('RESEND_FROM_EMAIL', '').strip()
+
 
