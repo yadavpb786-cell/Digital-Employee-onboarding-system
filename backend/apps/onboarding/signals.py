@@ -11,7 +11,7 @@ def handle_demo_bootstrap_post_migrate(sender, **kwargs):
     if ENABLE_DEMO_BOOTSTRAP is explicitly enabled, the demo account is safely
     verified and linked without needing manual Render Shell access.
     """
-    bootstrap_enabled, flag_source = _resolve_bootstrap_flag()
+    bootstrap_enabled, flag_source, _ = _resolve_bootstrap_flag()
 
     if not bootstrap_enabled:
         return
@@ -19,5 +19,5 @@ def handle_demo_bootstrap_post_migrate(sender, **kwargs):
     sys.stdout.write(f"[post_migrate] Demo bootstrap authorized via {flag_source}. Invoking setup_demo_user...\n")
     try:
         call_command('setup_demo_user')
-    except Exception as exc:
+    except (Exception, SystemExit) as exc:
         sys.stderr.write(f"[post_migrate] Error running setup_demo_user: {exc}\n")

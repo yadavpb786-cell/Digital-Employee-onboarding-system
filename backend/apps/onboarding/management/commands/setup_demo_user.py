@@ -6,86 +6,106 @@ from apps.onboarding.models import Employee, EmployeeProfile
 from apps.onboarding.views import ensure_default_stages
 
 
+def _normalize_str(val):
+    if val is None:
+        return ''
+    s = str(val).strip()
+    if (s.startswith('"') and s.endswith('"')) or (s.startswith("'") and s.endswith("'")):
+        s = s[1:-1].strip()
+    return s
+
+
 def _is_truthy(val):
-    if not val:
-        return False
-    clean = str(val).strip().lower().strip('"\'')
+    clean = _normalize_str(val).lower().rstrip(';,')
+    if '=' in clean:
+        clean = clean.split('=', 1)[1].strip().strip('"\'')
     return clean in ('true', '1', 'yes', 't', 'y', 'enable', 'enabled', 'on')
+
+
+def _is_falsy(val):
+    clean = _normalize_str(val).lower().rstrip(';,')
+    if '=' in clean:
+        clean = clean.split('=', 1)[1].strip().strip('"\'')
+    return clean in ('false', '0', 'no', 'off', 'disable', 'disabled')
 
 
 def _resolve_bootstrap_flag():
     """
     Robustly resolves whether demo account bootstrap is authorized.
-    Scans environment variable keys case-insensitively and handles trailing spaces/quotes.
+    Scans environment variable keys case-insensitively, handles trailing spaces,
+    surrounding quotes, embedded KEY=VALUE formats, and aliases.
     Also detects intent if DEMO_USER_PASSWORD was explicitly provided (unless bootstrap is explicitly false).
+    Returns (authorized: bool, source_key: str, normalized_value: str).
     """
-    # 1. Direct standard names
-    for key in (
+    target_keys = {
         'ENABLE_DEMO_BOOTSTRAP',
         'SETUP_DEMO_USER',
         'BOOTSTRAP_DEMO_USER',
         'ENABLE_BOOTSTRAP',
         'DEMO_BOOTSTRAP',
-    ):
-        val = os.getenv(key)
-        if val is not None and _is_truthy(val):
-            return True, key
+    }
 
-    # 2. Case-insensitive and trimmed scanning across all os.environ keys
+    raw_falsy_key = None
+
+    # 1. Scan os.environ for explicit bootstrap flags
     for k, v in os.environ.items():
         norm_k = k.strip().upper()
-        if norm_k in (
-            'ENABLE_DEMO_BOOTSTRAP',
-            'SETUP_DEMO_USER',
-            'BOOTSTRAP_DEMO_USER',
-            'ENABLE_BOOTSTRAP',
-            'DEMO_BOOTSTRAP',
-        ):
+        if norm_k in target_keys or 'DEMO_BOOTSTRAP' in norm_k or 'BOOTSTRAP_DEMO' in norm_k:
             if _is_truthy(v):
-                return True, k
+                return True, k.strip(), 'true'
+            elif _is_falsy(v):
+                raw_falsy_key = k.strip()
 
-    # 3. If DEMO_USER_PASSWORD or DEMO_PASSWORD is provided in env, that indicates clear intent
-    # provided ENABLE_DEMO_BOOTSTRAP was not explicitly set to 'false' / '0'
-    raw_flag = None
+    # 2. Check for DEMO_USER_PASSWORD in environment.
+    # If the operator configured DEMO_USER_PASSWORD in Render, that provides explicit intent,
+    # unless an authorization flag was explicitly set to false/0.
+    has_pw, pw_source = False, None
     for k, v in os.environ.items():
-        if k.strip().upper() == 'ENABLE_DEMO_BOOTSTRAP':
-            raw_flag = str(v).strip().lower().strip('"\'')
-            break
+        norm_k = k.strip().upper()
+        if norm_k in ('DEMO_USER_PASSWORD', 'DEMO_PASSWORD', 'DEMO_USER_PASS', 'BOOTSTRAP_PASSWORD', 'DEMO_ACCOUNT_PASSWORD'):
+            if bool(_normalize_str(v)):
+                has_pw = True
+                pw_source = k.strip()
+                break
 
-    has_password = any(
-        k.strip().upper() in ('DEMO_USER_PASSWORD', 'DEMO_PASSWORD', 'DEMO_USER_PASS', 'BOOTSTRAP_PASSWORD')
-        and bool(str(v).strip())
-        for k, v in os.environ.items()
-    )
-    if has_password and (raw_flag not in ('false', '0', 'no', 'off', 'disable', 'disabled')):
-        return True, 'DEMO_USER_PASSWORD_DETECTED'
+    if has_pw and not raw_falsy_key:
+        return True, f"{pw_source}_DETECTED", 'true_by_password_presence'
 
-    return False, None
+    if raw_falsy_key:
+        return False, raw_falsy_key, 'false'
+
+    return False, None, 'not_set'
 
 
 def _resolve_bootstrap_password(options):
     """
     Resolves demo account password from CLI options or environment variables.
-    Handles key aliases, case-insensitivity, trailing whitespace, and wrapping quotes.
+    Handles key aliases, case-insensitivity, trailing whitespace, wrapping quotes,
+    and accidental KEY=VALUE pasted inputs.
     NEVER logs or exposes the password value.
     """
     if options.get('password'):
         return options.get('password').strip(), '--password CLI'
 
+    target_pw_keys = {
+        'DEMO_USER_PASSWORD',
+        'DEMO_PASSWORD',
+        'DEMO_USER_PASS',
+        'BOOTSTRAP_PASSWORD',
+        'DEMO_ACCOUNT_PASSWORD',
+    }
+
     for k, v in os.environ.items():
         norm_k = k.strip().upper()
-        if norm_k in (
-            'DEMO_USER_PASSWORD',
-            'DEMO_PASSWORD',
-            'DEMO_USER_PASS',
-            'BOOTSTRAP_PASSWORD',
-            'DEMO_ACCOUNT_PASSWORD',
-        ):
-            val = str(v).strip()
-            if (val.startswith('"') and val.endswith('"')) or (val.startswith("'") and val.endswith("'")):
-                val = val[1:-1].strip()
+        if norm_k in target_pw_keys or 'DEMO_PASSWORD' in norm_k or 'DEMO_USER_PASSWORD' in norm_k:
+            val = _normalize_str(v)
+            # If user accidentally pasted KEY=VALUE into Render's Value box
+            for prefix in ('DEMO_USER_PASSWORD=', 'DEMO_PASSWORD=', 'PASSWORD=', f"{k.strip()}="):
+                if val.upper().startswith(prefix.upper()):
+                    val = _normalize_str(val[len(prefix):])
+                    break
             if val:
-                return val, k
+                return val, k.strip()
 
     return None, None
 
@@ -118,30 +138,39 @@ class Command(BaseCommand):
 
     def handle(self, *args, **options):
         is_production = bool(os.getenv('RENDER') or os.getenv('PRODUCTION', '').lower() == 'true')
-        bootstrap_enabled, flag_source = _resolve_bootstrap_flag()
+        bootstrap_enabled, flag_source, flag_norm_val = _resolve_bootstrap_flag()
 
         # If --password was explicitly passed on CLI, that also enables bootstrap
         if bool(options.get('password')):
             bootstrap_enabled = True
             flag_source = '--password CLI'
+            flag_norm_val = 'true_by_cli'
 
         raw_password, password_source = _resolve_bootstrap_password(options)
 
-        # Safe diagnostic logs (ONLY keys and booleans — NEVER print password or secrets)
-        relevant_keys = [
-            k for k in os.environ.keys()
+        # Collect relevant diagnostic keys (NEVER log secrets, tokens, or values)
+        relevant_keys = sorted([
+            k.strip() for k in os.environ.keys()
             if any(term in k.strip().upper() for term in ('BOOTSTRAP', 'DEMO', 'RENDER', 'PRODUCTION'))
-        ]
-        self.stdout.write(f"[setup_demo_user:diagnostics] is_production: {is_production}")
-        self.stdout.write(f"[setup_demo_user:diagnostics] flag_detected: {bootstrap_enabled} (source: {flag_source or 'None'})")
-        self.stdout.write(f"[setup_demo_user:diagnostics] password_detected: {bool(raw_password)} (source: {password_source or 'None'})")
-        self.stdout.write(f"[setup_demo_user:diagnostics] relevant_env_keys: {relevant_keys}")
+            and not any(secret in k.strip().upper() for secret in ('SECRET_KEY', 'DATABASE_URL', 'AUTH_TOKEN', 'JWT'))
+        ])
+
+        # Safe diagnostic logs (ONLY keys and booleans — NEVER print password or secrets)
+        self.stdout.write("================================================================================")
+        self.stdout.write("[setup_demo_user:diagnostics] Safe Environment Diagnostics:")
+        self.stdout.write(f"  * is_production: {is_production} (RENDER={bool(os.getenv('RENDER'))}, PRODUCTION={os.getenv('PRODUCTION')})")
+        self.stdout.write(f"  * bootstrap_flag_present: {bool(flag_source)} (source: {flag_source or 'None'})")
+        self.stdout.write(f"  * normalized_bootstrap_value: {flag_norm_val}")
+        self.stdout.write(f"  * bootstrap_authorized: {bootstrap_enabled}")
+        self.stdout.write(f"  * password_present: {bool(raw_password)} (source: {password_source or 'None'})")
+        self.stdout.write(f"  * relevant_environment_keys: {relevant_keys}")
+        self.stdout.write("================================================================================")
 
         # In production environments, require explicit authorization flag
         if is_production and not bootstrap_enabled:
             self.stdout.write(self.style.WARNING(
                 "[setup_demo_user] Demo account bootstrap is disabled in production. "
-                "To enable one-time creation/repair, set ENABLE_DEMO_BOOTSTRAP=true in environment."
+                "To enable one-time creation/repair, set ENABLE_DEMO_BOOTSTRAP=true in Render Environment."
             ))
             return
 

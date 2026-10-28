@@ -3546,6 +3546,76 @@ class LoginAuthenticationAndBootstrapTestCase(APITestCase):
         finally:
             os.environ.pop('RENDER', None)
 
+    def test_setup_demo_user_password_presence_authorizes_bootstrap(self):
+        import os
+        from django.core.management import call_command
+        from io import StringIO
+
+        out = StringIO()
+        os.environ['RENDER'] = 'true'
+        os.environ['DEMO_USER_PASSWORD'] = 'ImplicitIntentPass@2026'
+        try:
+            call_command('setup_demo_user', username='rahul.kumar', stdout=out)
+            self.assertIn('completed successfully', out.getvalue())
+            rahul = User.objects.get(username='rahul.kumar')
+            self.assertTrue(rahul.check_password('ImplicitIntentPass@2026'))
+        finally:
+            os.environ.pop('RENDER', None)
+            os.environ.pop('DEMO_USER_PASSWORD', None)
+
+    def test_setup_demo_user_explicit_false_blocks_even_with_password(self):
+        import os
+        from django.core.management import call_command
+        from io import StringIO
+
+        out = StringIO()
+        os.environ['RENDER'] = 'true'
+        os.environ['ENABLE_DEMO_BOOTSTRAP'] = 'false'
+        os.environ['DEMO_USER_PASSWORD'] = 'ShouldNotBeUsedPass@2026'
+        try:
+            call_command('setup_demo_user', username='rahul.kumar', stdout=out)
+            self.assertIn('bootstrap is disabled in production', out.getvalue())
+        finally:
+            os.environ.pop('RENDER', None)
+            os.environ.pop('ENABLE_DEMO_BOOTSTRAP', None)
+            os.environ.pop('DEMO_USER_PASSWORD', None)
+
+    def test_setup_demo_user_missing_password_exits_nonzero(self):
+        import os
+        from django.core.management import call_command
+        from io import StringIO
+
+        out = StringIO()
+        os.environ['ENABLE_DEMO_BOOTSTRAP'] = 'true'
+        try:
+            with self.assertRaises(SystemExit) as cm:
+                call_command('setup_demo_user', username='rahul.kumar', stdout=out)
+            self.assertEqual(cm.exception.code, 1)
+            self.assertIn('Bootstrap is enabled, but no password was detected', out.getvalue())
+        finally:
+            os.environ.pop('ENABLE_DEMO_BOOTSTRAP', None)
+
+    def test_setup_demo_user_safe_diagnostics_never_leaks_password(self):
+        import os
+        from django.core.management import call_command
+        from io import StringIO
+
+        out = StringIO()
+        secret_pass = 'UltraSecretNeverLeakPass_987654'
+        os.environ['ENABLE_DEMO_BOOTSTRAP'] = 'true'
+        os.environ['DEMO_USER_PASSWORD'] = secret_pass
+        try:
+            call_command('setup_demo_user', username='rahul.kumar', stdout=out)
+            logs = out.getvalue()
+            self.assertIn('[setup_demo_user:diagnostics]', logs)
+            self.assertIn('bootstrap_flag_present: True', logs)
+            self.assertIn('password_present: True', logs)
+            self.assertNotIn(secret_pass, logs)
+        finally:
+            os.environ.pop('ENABLE_DEMO_BOOTSTRAP', None)
+            os.environ.pop('DEMO_USER_PASSWORD', None)
+
+
 
 
 
