@@ -3374,6 +3374,114 @@ class AdminQuickInvitationTestCase(APITestCase):
         self.assertEqual(resp_anon.status_code, 401)
 
 
+class LoginAuthenticationAndBootstrapTestCase(APITestCase):
+    """Automated tests for LoginView lookups and setup_demo_user command."""
+
+    def setUp(self):
+        self.password = 'StrongSecretPass@2026'
+        self.user = User.objects.create_user(
+            username='auth.tester',
+            email='auth.tester@novatech.io',
+            password=self.password,
+            first_name='Auth',
+            last_name='Tester'
+        )
+        self.employee = Employee.objects.create(
+            user=self.user,
+            employee_id='EMP-AUTH-9999',
+            name='Auth Tester',
+            email='auth.tester@novatech.io',
+            role='Test Engineer',
+            system_role=Employee.ROLE_EMPLOYEE
+        )
+
+    def test_login_exact_username(self):
+        resp = self.client.post('/api/v1/auth/login/', {
+            'username': 'auth.tester',
+            'password': self.password
+        }, format='json')
+        self.assertEqual(resp.status_code, 200)
+        self.assertIn('access', resp.data)
+        self.assertEqual(resp.data['user']['username'], 'auth.tester')
+        self.assertEqual(resp.data['user']['system_role'], 'EMPLOYEE')
+
+    def test_login_case_insensitive_username(self):
+        resp = self.client.post('/api/v1/auth/login/', {
+            'username': 'AUTH.TESTER',
+            'password': self.password
+        }, format='json')
+        self.assertEqual(resp.status_code, 200)
+        self.assertIn('access', resp.data)
+        self.assertEqual(resp.data['user']['username'], 'auth.tester')
+
+    def test_login_with_email_case_insensitive(self):
+        resp = self.client.post('/api/v1/auth/login/', {
+            'username': 'Auth.Tester@NovaTech.io',
+            'password': self.password
+        }, format='json')
+        self.assertEqual(resp.status_code, 200)
+        self.assertIn('access', resp.data)
+
+    def test_login_with_employee_id(self):
+        # Uppercase
+        resp1 = self.client.post('/api/v1/auth/login/', {
+            'username': 'EMP-AUTH-9999',
+            'password': self.password
+        }, format='json')
+        self.assertEqual(resp1.status_code, 200)
+
+        # Lowercase
+        resp2 = self.client.post('/api/v1/auth/login/', {
+            'username': 'emp-auth-9999',
+            'password': self.password
+        }, format='json')
+        self.assertEqual(resp2.status_code, 200)
+
+    def test_login_invalid_password_returns_401(self):
+        resp = self.client.post('/api/v1/auth/login/', {
+            'username': 'auth.tester',
+            'password': 'WrongPassword123'
+        }, format='json')
+        self.assertEqual(resp.status_code, 401)
+        self.assertIn('detail', resp.data)
+
+    def test_login_inactive_account_returns_403(self):
+        self.user.is_active = False
+        self.user.save()
+        resp = self.client.post('/api/v1/auth/login/', {
+            'username': 'auth.tester',
+            'password': self.password
+        }, format='json')
+        self.assertEqual(resp.status_code, 403)
+
+    def test_login_missing_fields_returns_400(self):
+        resp = self.client.post('/api/v1/auth/login/', {
+            'username': '',
+            'password': ''
+        }, format='json')
+        self.assertEqual(resp.status_code, 400)
+
+    def test_setup_demo_user_command_execution(self):
+        from django.core.management import call_command
+        from io import StringIO
+        out = StringIO()
+
+        # Run command with --username and --password
+        call_command(
+            'setup_demo_user',
+            username='rahul.kumar',
+            password='TestBootstrapPass@2026',
+            stdout=out
+        )
+        self.assertIn('completed successfully', out.getvalue())
+        rahul = User.objects.get(username='rahul.kumar')
+        self.assertTrue(rahul.check_password('TestBootstrapPass@2026'))
+        emp = Employee.objects.get(user=rahul)
+        self.assertEqual(emp.employee_id, 'EMP-2026-8941')
+        self.assertEqual(emp.system_role, Employee.ROLE_EMPLOYEE)
+
+
+
 
 
 

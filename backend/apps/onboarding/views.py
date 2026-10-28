@@ -249,18 +249,37 @@ class LoginView(APIView):
                 status=status.HTTP_400_BAD_REQUEST
             )
 
-        # Allow authentication by username, email, or employee ID
+        # Allow authentication by username, email, or employee ID (case-insensitive)
         user = None
-        if '@' in username_input:
-            user_match = User.objects.filter(email__iexact=username_input).first()
-            if user_match:
-                user = authenticate(request, username=user_match.username, password=password)
-        elif username_input.startswith('EMP-'):
-            emp_match = Employee.objects.filter(employee_id__iexact=username_input).first()
-            if emp_match and emp_match.user:
-                user = authenticate(request, username=emp_match.user.username, password=password)
+        candidate_user = None
 
-        if not user:
+        # 1. Email lookup
+        if '@' in username_input:
+            candidate_user = User.objects.filter(email__iexact=username_input).first()
+            if not candidate_user:
+                emp_match = Employee.objects.filter(email__iexact=username_input).select_related('user').first()
+                if emp_match and emp_match.user:
+                    candidate_user = emp_match.user
+
+        # 2. Employee ID lookup (case-insensitive for 'EMP-' or 'emp-' or hyphenated ID)
+        if not candidate_user and (username_input.upper().startswith('EMP-') or '-' in username_input):
+            emp_match = Employee.objects.filter(employee_id__iexact=username_input).select_related('user').first()
+            if emp_match and emp_match.user:
+                candidate_user = emp_match.user
+
+        # 3. Direct or case-insensitive username lookup
+        if not candidate_user:
+            candidate_user = User.objects.filter(username__iexact=username_input).first()
+
+        # If a user was matched by identifier, authenticate with their exact username
+        if candidate_user:
+            user = authenticate(request, username=candidate_user.username, password=password)
+            if not user and not candidate_user.is_active and candidate_user.check_password(password):
+                return Response(
+                    {'detail': 'This account is inactive. Please contact HR Operations.'},
+                    status=status.HTTP_403_FORBIDDEN
+                )
+        else:
             user = authenticate(request, username=username_input, password=password)
 
         if not user:
